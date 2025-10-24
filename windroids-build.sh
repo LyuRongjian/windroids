@@ -194,6 +194,22 @@ EOF
 
 echo "✅ Cross-file created: $CROSS_FILE"
 
+# 创建native.ini文件，用于本地构建工具配置
+cat > "$NATIVE_FILE" << EOF
+[binaries]
+# 本地工具配置，用于运行在主机上的构建工具
+meson = '$HOME/.local/bin/meson'
+ninja = '/usr/bin/ninja'
+wayland-scanner = '/usr/bin/wayland-scanner'
+[host_machine]
+system = 'linux'
+cpu_family = 'x86_64'
+cpu = 'x86_64'
+endian = 'little'
+EOF
+
+echo "✅ Native-file created: $NATIVE_FILE"
+
 # -------------------------------
 # 6. 下载并解压函数
 # -------------------------------
@@ -410,13 +426,37 @@ setup_dependency() {
 build_meson() {
     local dir=$1
     local extra_args=("${@:2}")
-    cd "$SRC_DIR/$dir"
+    local component_dir="$SRC_DIR/$dir"
+    cd "$component_dir"
     echo "🔧 Building $dir"
+
+    # 确保subprojects目录存在
+    mkdir -p "$component_dir/subprojects"
+    
+    # 检查全局subprojects目录并复制依赖文件（如果目标不存在）
+    if [ -d "$PROJECT_ROOT/subprojects" ]; then
+        echo "📁 使用本地subprojects依赖..."
+        
+        # 复制所有的.wrap文件（如果目标不存在）
+        find "$PROJECT_ROOT/subprojects" -name "*.wrap" -exec cp -n {} "$component_dir/subprojects/" \; 2>/dev/null || true
+        
+        # 复制所有的源码包文件（如果目标不存在）
+        find "$PROJECT_ROOT/subprojects" -name "*.tar.*" -exec cp -n {} "$component_dir/subprojects/" \; 2>/dev/null || true
+        
+        # 复制已解压的源码目录（如果目标不存在）
+        for dep_dir in "$PROJECT_ROOT/subprojects"/*; do
+            if [ -d "$dep_dir" ] && [ ! -f "$dep_dir.wrap" ] && [ "$(basename "$dep_dir")" != "packagecache" ]; then
+                local target_dir="$component_dir/subprojects/$(basename "$dep_dir")"
+                if [ ! -d "$target_dir" ]; then
+                    cp -r "$dep_dir" "$target_dir" 2>/dev/null || true
+                fi
+            fi
+        done
+    fi
 
     # 为 wayland 添加子项目依赖
     if [ "$dir" = "wayland" ]; then
         echo "📦 Setting up dependencies with full Meson support..."
-        mkdir -p subprojects
         setup_dependency libffi 3.5.2
         setup_dependency expat  2.7.3
         setup_dependency libxml2 2.12.5
@@ -425,20 +465,36 @@ build_meson() {
     # ✅ 不再调用 build_host_wayland_scanner
     # 系统 wayland-scanner 会自动被 Meson 调用
 
-    rm -rf build
-    echo "🚀 Running meson setup for $dir..."
-    meson setup build \
-        --cross-file "$CROSS_FILE" \
-        --native-file "$NATIVE_FILE" \
-        --prefix "$OUTPUT_DIR" \
-        --libdir lib \
-        --wrap-mode=nodownload \
-        -Ddefault_library=static \
-        -Db_ndebug=true \
-        -Db_staticpic=true \
-        -Dc_args="-DFFI_NO_EXEC_TRAMPOLINE=1" \
-        -Dcpp_args="-DFFI_NO_EXEC_TRAMPOLINE=1" \
-        "${extra_args[@]}"
+    # 不再直接删除build目录，而是使用--reconfigure确保已有依赖不被删除
+    if [ -d "build" ]; then
+        echo "🔄 重新配置现有构建目录..."
+        meson setup --reconfigure build \
+            --cross-file "$CROSS_FILE" \
+            --native-file "$NATIVE_FILE" \
+            --prefix "$OUTPUT_DIR" \
+            --libdir lib \
+            --wrap-mode=forcefallback \
+            -Ddefault_library=static \
+            -Db_ndebug=true \
+            -Db_staticpic=true \
+            -Dc_args="-DFFI_NO_EXEC_TRAMPOLINE=1" \
+            -Dcpp_args="-DFFI_NO_EXEC_TRAMPOLINE=1" \
+            "${extra_args[@]}"
+    else
+        echo "🚀 Running meson setup for $dir..."
+        meson setup build \
+            --cross-file "$CROSS_FILE" \
+            --native-file "$NATIVE_FILE" \
+            --prefix "$OUTPUT_DIR" \
+            --libdir lib \
+            --wrap-mode=forcefallback \
+            -Ddefault_library=static \
+            -Db_ndebug=true \
+            -Db_staticpic=true \
+            -Dc_args="-DFFI_NO_EXEC_TRAMPOLINE=1" \
+            -Dcpp_args="-DFFI_NO_EXEC_TRAMPOLINE=1" \
+            "${extra_args[@]}"
+    fi
 
     if [ $? -ne 0 ]; then
         echo "❌ Meson setup failed."
@@ -449,6 +505,27 @@ build_meson() {
     ninja -C build || { echo "❌ Ninja build failed."; exit 1; }
     echo "📦 Installing $dir to $OUTPUT_DIR..."
     ninja -C build install || { echo "❌ Install failed."; exit 1; }
+    
+    # 保存已构建的依赖回全局subprojects目录（如果有新下载的）
+    if [ -d "$component_dir/subprojects" ] && [ -d "$PROJECT_ROOT/subprojects" ]; then
+        echo "📊 更新全局subprojects缓存..."
+        # 复制新的或更新的.wrap文件
+        find "$component_dir/subprojects" -name "*.wrap" -exec cp -n {} "$PROJECT_ROOT/subprojects/" \; 2>/dev/null || true
+        
+        # 复制新的或更新的源码包
+        find "$component_dir/subprojects" -name "*.tar.*" -exec cp -n {} "$PROJECT_ROOT/subprojects/" \; 2>/dev/null || true
+        
+        # 复制新解压的依赖目录
+        for dep_dir in "$component_dir/subprojects"/*; do
+            if [ -d "$dep_dir" ] && [ ! -f "$dep_dir.wrap" ] && [ "$(basename "$dep_dir")" != "packagecache" ]; then
+                local target_dir="$PROJECT_ROOT/subprojects/$(basename "$dep_dir")"
+                if [ ! -d "$target_dir" ]; then
+                    cp -r "$dep_dir" "$target_dir" 2>/dev/null || true
+                fi
+            fi
+        done
+    fi
+    
     echo "✅ $dir built and installed successfully!"
 }
 
@@ -471,101 +548,271 @@ build_autotools() {
 }
 
 # -------------------------------
-# 10. 编译依赖库（Meson 项目）
+# 10. 编译依赖库（按照正确的依赖顺序）
 # -------------------------------
-build_meson wayland \
-    --force-fallback-for=libffi,expat,libxml2 \
+# 辅助函数：检查构建结果
+check_build_result() {
+    local component=$1
+    local expected_path=$2
+    if [ -f "$expected_path" ]; then
+        echo "✅ $component 构建成功：$expected_path"
+        return 0
+    else
+        echo "❌ $component 构建失败：未找到 $expected_path"
+        return 1
+    fi
+}
+
+# 构建缓存检查函数
+build_if_not_exists() {
+    local builder=$1
+    local component=$2
+    local expected_path=$3
+    shift 3
+    
+    if [ -f "$expected_path" ]; then
+        echo "✅ 跳过 $component 构建，已存在：$expected_path"
+        return 0
+    else
+        echo "🔨 开始构建 $component"
+        $builder $component "$@"
+        return $?
+    fi
+}
+
+# 按照依赖顺序构建（Meson项目）
+build_if_not_exists build_meson wayland "$OUTPUT_DIR/lib/libwayland-client.so" \
     --wrap-mode=nodownload \
+    --wrap-mode=nofallback \
     -Dscanner=false \
     -Dlibraries=true \
     -Ddocumentation=false \
     -Ddtd_validation=false \
     -Dlibffi:exe_static_tramp=true
 
-build_meson libdrm
-build_meson pixman
-build_meson libxkbcommon
-build_meson xorg-xproto
-build_meson libX11
-build_meson libXext
-build_meson libXcursor
-build_meson libxkbfile
+build_if_not_exists build_meson libdrm "$OUTPUT_DIR/lib/libdrm.so"
+build_if_not_exists build_meson pixman "$OUTPUT_DIR/lib/libpixman-1.a"
+build_if_not_exists build_meson libxkbcommon "$OUTPUT_DIR/lib/libxkbcommon.a"
 
-# -------------------------------
-# 11. 编译 Autotools 项目
-# -------------------------------
-# 注意：pixman 已在上面用 Meson 构建，这里跳过
-# 如果您想用 autotools 构建 pixman，请注释上面的 build_meson pixman
-
-# 但 xorgproto, libX*, xorg_server 必须用 autotools
-build_autotools xorgproto
-build_autotools libX11
-build_autotools libXext
-build_autotools libXcursor
-build_autotools libxkbfile
+# Autotools项目（按照依赖顺序）
+build_if_not_exists build_autotools xorgproto "$OUTPUT_DIR/include/X11/xproto.h"
+build_if_not_exists build_autotools libX11 "$OUTPUT_DIR/lib/libX11.a"
+build_if_not_exists build_autotools libXext "$OUTPUT_DIR/lib/libXext.a"
+build_if_not_exists build_autotools libXcursor "$OUTPUT_DIR/lib/libXcursor.a"
+build_if_not_exists build_autotools libxkbfile "$OUTPUT_DIR/lib/libxkbfile.a"
 
 # -------------------------------
 # 12. 编译 XWayland（xorg-server）
 # -------------------------------
-cd "$SRC_DIR/xorg_server"
-echo "🔧 Building XWayland"
-if [ ! -f "configure" ] && [ -f "autogen.sh" ]; then
-    ./autogen.sh --host=aarch64-linux-android \
-        --enable-xwayland \
-        --disable-xorg \
-        --disable-dri \
-        --disable-glamor \
-        --without-dtrace \
-        --prefix="$OUTPUT_DIR"
-fi
-
-./configure --host=aarch64-linux-android \
-            --prefix="$OUTPUT_DIR" \
+build_xwayland() {
+    local component="XWayland"
+    local expected_path="$OUTPUT_DIR/bin/xwayland"
+    
+    if [ -f "$expected_path" ]; then
+        echo "✅ 跳过 $component 构建，已存在：$expected_path"
+        return 0
+    fi
+    
+    echo "🔧 Building $component"
+    cd "$SRC_DIR/xorg_server" || { echo "❌ 无法进入 xorg_server 目录"; return 1; }
+    
+    # 确保干净的构建环境
+    make clean || true
+    rm -f "configure"
+    
+    # 生成配置脚本
+    if [ ! -f "configure" ] && [ -f "autogen.sh" ]; then
+        echo "🔧 运行 autogen.sh"
+        ./autogen.sh --host=aarch64-linux-android \
             --enable-xwayland \
             --disable-xorg \
             --disable-dri \
             --disable-glamor \
-            --without-dtrace
+            --without-dtrace \
+            --prefix="$OUTPUT_DIR" \
+            CFLAGS="-I$OUTPUT_DIR/include" \
+            LDFLAGS="-L$OUTPUT_DIR/lib" || { echo "❌ autogen.sh 失败"; return 1; }
+    fi
+    
+    # 配置
+    echo "🔧 配置 $component"
+    ./configure --host=aarch64-linux-android \
+                --prefix="$OUTPUT_DIR" \
+                --enable-xwayland \
+                --disable-xorg \
+                --disable-dri \
+                --disable-glamor \
+                --without-dtrace \
+                CFLAGS="-I$OUTPUT_DIR/include" \
+                LDFLAGS="-L$OUTPUT_DIR/lib" || { echo "❌ configure 失败"; return 1; }
+    
+    # 构建
+    echo "🔨 编译 $component"
+    make -j$(nproc) || { echo "❌ make 失败"; return 1; }
+    
+    # 安装
+    echo "📦 安装 $component"
+    make install || { echo "❌ make install 失败"; return 1; }
+    
+    # 确保可执行文件存在
+    mkdir -p "$OUTPUT_DIR/bin"
+    cp hw/xwayland/xwayland "$OUTPUT_DIR/bin/xwayland" || { echo "❌ 复制 xwayland 失败"; return 1; }
+    
+    check_build_result "$component" "$expected_path"
+    return $?
+}
 
-make -j$(nproc)
-make install
-mkdir -p "$OUTPUT_DIR/bin"
-cp hw/xwayland/xwayland "$OUTPUT_DIR/bin/xwayland"
-echo "✅ XWayland built: $OUTPUT_DIR/bin/xwayland"
+build_xwayland
 
 # -------------------------------
 # 13. 编译 wlroots
 # -------------------------------
-cd "$SRC_DIR/wlroots"
-echo "🔧 Building wlroots"
-rm -rf build
-meson setup build \
-    --cross-file "$CROSS_FILE" \
-    --native-file "$NATIVE_FILE" \
-    --prefix "$OUTPUT_DIR" \
-    --libdir lib \
-    --wrap-mode=nodownload \
-    -Dxwayland=true \
-    -Dexamples=false \
-    -Dbackends=drm,headless \
-    -Drenderers=gl,gbm \
-    -Dgbm=enabled \
-    -Dlibffi:exe_static_tramp=true
-ninja -C build
-ninja -C build install
-mkdir -p "$OUTPUT_DIR/lib"
-cp build/libwlroots.so "$OUTPUT_DIR/lib/libwlroots.so"
-echo "✅ libwlroots.so built: $OUTPUT_DIR/lib/libwlroots.so"
+build_wlroots() {
+    local component="wlroots"
+    local expected_path="$OUTPUT_DIR/lib/libwlroots.so"
+    
+    if [ -f "$expected_path" ]; then
+        echo "✅ 跳过 $component 构建，已存在：$expected_path"
+        return 0
+    fi
+    
+    echo "🔧 Building $component"
+    cd "$SRC_DIR/wlroots" || { echo "❌ 无法进入 wlroots 目录"; return 1; }
+    
+    # 确保干净的构建环境
+    rm -rf build
+    
+    # 设置环境变量确保找到正确的依赖
+    export PKG_CONFIG_PATH="$OUTPUT_DIR/lib/pkgconfig:$PKG_CONFIG_PATH"
+    export CFLAGS="-I$OUTPUT_DIR/include $CFLAGS"
+    export LDFLAGS="-L$OUTPUT_DIR/lib $LDFLAGS"
+    
+    # 配置 Meson
+    echo "🔧 配置 $component"
+    meson setup build \
+        --cross-file "$CROSS_FILE" \
+        --native-file "$NATIVE_FILE" \
+        --prefix "$OUTPUT_DIR" \
+        --libdir lib \
+        --wrap-mode=nodownload \
+        -Dxwayland=true \
+        -Dexamples=false \
+        -Dbackends=drm,headless \
+        -Drenderers=gl,gbm \
+        -Dgbm=enabled \
+        -Dlibffi:exe_static_tramp=true || { echo "❌ meson setup 失败"; return 1; }
+    
+    # 构建
+    echo "🔨 编译 $component"
+    ninja -C build || { echo "❌ ninja 构建失败"; return 1; }
+    
+    # 安装
+    echo "📦 安装 $component"
+    ninja -C build install || { echo "❌ ninja install 失败"; return 1; }
+    
+    # 确保库文件存在
+    mkdir -p "$OUTPUT_DIR/lib"
+    cp build/libwlroots.so "$OUTPUT_DIR/lib/libwlroots.so" || { echo "❌ 复制 libwlroots.so 失败"; return 1; }
+    
+    check_build_result "$component" "$expected_path"
+    return $?
+}
+
+build_wlroots
 
 # -------------------------------
-# 13. 完成
+# 14. Wine 集成配置
 # -------------------------------
-echo ""
-echo "🎉 WinDroids Build Complete!"
-echo "📦 Output: $OUTPUT_DIR"
-echo "   ├── lib/libwlroots.so"
-echo "   └── bin/xwayland"
-echo ""
-echo "👉 Next: Integrate into GameActivity using ANativeWindow"
-echo "✅ All tools up-to-date: Meson (latest), Git (with progress)"
+setup_wine_integration() {
+    echo "🔄 配置 Wine 集成"
+    
+    # 创建 Wine 集成目录
+    mkdir -p "$OUTPUT_DIR/wine"
+    mkdir -p "$OUTPUT_DIR/wine/lib"
+    mkdir -p "$OUTPUT_DIR/wine/bin"
+    mkdir -p "$OUTPUT_DIR/wine/share"
+    
+    # 创建 Wine 集成脚本
+    cat > "$OUTPUT_DIR/run_wine_app.sh" << 'EOF'
+#!/bin/bash
+# Wine 应用运行脚本
+
+# 设置环境变量
+WINDOWSDIR="$(dirname "$0")"
+export LD_LIBRARY_PATH="$WINDOWSDIR/lib:$WINDOWSDIR/wine/lib:$LD_LIBRARY_PATH"
+export PATH="$WINDOWSDIR/bin:$WINDOWSDIR/wine/bin:$PATH"
+
+# 启动 XWayland
+XWAYLAND_DISPLAY="wayland-0"
+$WINDOWSDIR/bin/xwayland :0 &
+XWAYLAND_PID=$!
+sleep 2  # 等待 XWayland 启动
+
+# 设置显示变量
+export DISPLAY=:0
+
+# 启动 Wine 应用（用户需要自己安装 Wine）
+if [ -f "$WINDOWSDIR/wine/bin/wine" ]; then
+    echo "启动 Wine 应用: $@"
+    $WINDOWSDIR/wine/bin/wine "$@"
+else
+    echo "错误: 请先在 $WINDOWSDIR/wine 目录下安装 Wine for Android"
+fi
+
+# 清理
+kill $XWAYLAND_PID
+EOF
+    
+    chmod +x "$OUTPUT_DIR/run_wine_app.sh"
+    echo "✅ Wine 集成脚本创建成功: $OUTPUT_DIR/run_wine_app.sh"
+    
+    # 创建安装指南
+    cat > "$OUTPUT_DIR/README.md" << 'EOF'
+# WinDroids 构建结果
+
+## 目录结构
+- `bin/`: 可执行文件（如 xwayland）
+- `lib/`: 库文件（如 libwlroots.so）
+- `include/`: 头文件
+- `wine/`: Wine 集成目录
+- `run_wine_app.sh`: 运行 Wine 应用的启动脚本
+
+## 使用说明
+1. 将构建结果复制到 Android 设备
+2. 在 `wine/` 目录下安装 Wine for Android
+3. 运行 `./run_wine_app.sh 你的Windows应用.exe`
+
+## 注意事项
+- 确保设备支持 Wayland
+- Wine 需要单独下载和安装
+- 部分 Windows 应用可能需要额外配置
+EOF
+    
+    echo "✅ 安装指南创建成功: $OUTPUT_DIR/README.md"
+}
+
+# 执行 Wine 集成配置
+setup_wine_integration
+
+# -------------------------------
+# 15. 构建完成
+# -------------------------------
+echo "🎉 Build completed!"
+echo "📁 Output directory: $OUTPUT_DIR"
 echo "🔄 Finish time: $(date)"
+
+# 显示构建摘要
+echo "\n📊 构建摘要:"
+echo "=================================="
+echo "✅ 主要组件:"
+[ -f "$OUTPUT_DIR/bin/xwayland" ] && echo "  * XWayland: $OUTPUT_DIR/bin/xwayland"
+[ -f "$OUTPUT_DIR/lib/libwlroots.so" ] && echo "  * wlroots: $OUTPUT_DIR/lib/libwlroots.so"
+[ -f "$OUTPUT_DIR/lib/libwayland-client.so" ] && echo "  * Wayland: $OUTPUT_DIR/lib/libwayland-client.so"
+[ -f "$OUTPUT_DIR/run_wine_app.sh" ] && echo "  * Wine 启动脚本: $OUTPUT_DIR/run_wine_app.sh"
+echo "=================================="
+
+# 显示后续步骤
+echo "\n📝 后续步骤:"
+echo "1. 将构建结果复制到 Android 设备"
+echo "2. 安装 Wine for Android"
+echo "3. 参考 $OUTPUT_DIR/README.md 获取详细使用说明"
