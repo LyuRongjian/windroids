@@ -84,6 +84,7 @@ build_wlroots() {
 
 prepare_cross_deps() {
     local wrap_dir="$SRC_DIR/meson-wrap"
+    log "🔍 DEBUG: wrap_dir = $wrap_dir"
     mkdir -p "$wrap_dir"
     pushd "$wrap_dir" >/dev/null
 
@@ -91,9 +92,11 @@ prepare_cross_deps() {
 
     local all_ok=1
     for dep in libffi expat libxml2; do
+        log "🔍 DEBUG: Processing dependency: $dep"
         meson wrap install "$dep" || true
 
         local wrap_file="subprojects/${dep}.wrap"
+        log "🔍 DEBUG: Checking wrap_file = $wrap_file"
         if [ ! -f "$wrap_file" ]; then
             log "❌ wrap file for $dep not found in $wrap_dir/subprojects/"
             all_ok=0
@@ -107,11 +110,16 @@ prepare_cross_deps() {
         source_hash=$(grep "^source_hash" "$wrap_file" | head -n1 | cut -d'=' -f2 | xargs)
         local tarball
         tarball="$wrap_dir/$(basename "$source_url")"
+        
+        log "🔍 DEBUG: source_url = $source_url"
+        log "🔍 DEBUG: source_hash = $source_hash"
+        log "🔍 DEBUG: tarball = $tarball"
 
         # 下载并校验源码包
         if [ -f "$tarball" ]; then
             local actual_hash
             actual_hash=$(sha256sum "$tarball" | awk '{print $1}')
+            log "🔍 DEBUG: actual_hash = $actual_hash"
             if [ "$actual_hash" = "$source_hash" ]; then
                 log "✅ $dep source hash OK, using cached $tarball"
             else
@@ -119,7 +127,10 @@ prepare_cross_deps() {
                 rm -f "$tarball"
             fi
         fi
+        
+        log "🔍 DEBUG: Checking if tarball exists: $tarball"
         if [ ! -f "$tarball" ]; then
+            log "🔍 DEBUG: Tarball does not exist, attempting to download"
             # 优先下载 source_url，失败则尝试 source_fallback_url
             if ! curl -L "$source_url" -o "$tarball"; then
                 local fallback_url
@@ -144,6 +155,7 @@ prepare_cross_deps() {
             fi
         fi
 
+        log "🔍 DEBUG: Proceeding to extract source code"
         # 解压源码
         local src_dir="$wrap_dir/$dep-src"
         rm -rf "$src_dir"
@@ -155,15 +167,27 @@ prepare_cross_deps() {
             *.zip)     unzip -q "$tarball" -d "$src_dir" ;;
             *)         log "❌ Unsupported archive format: $tarball"; continue ;;
         esac
-
+        
+                log "🔍 DEBUG: Source extracted, proceeding to patch"
         # 打补丁（如果 wrap 文件有 patch_url/patch_hash）
+        log "🔍 DEBUG: Reading patch info from $wrap_file"
         local patch_url
         patch_url=$(grep "^patch_url" "$wrap_file" | head -n1 | cut -d'=' -f2 | xargs)
+        log "🔍 DEBUG: Read patch_url: '$patch_url'"
         local patch_hash
         patch_hash=$(grep "^patch_hash" "$wrap_file" | head -n1 | cut -d'=' -f2 | xargs)
+        log "🔍 DEBUG: Read patch_hash: '$patch_hash'"
         local patch_filename
         patch_filename=$(grep "^patch_filename" "$wrap_file" | head -n1 | cut -d'=' -f2 | xargs)
+        log "🔍 DEBUG: Read patch_filename: '$patch_filename'"
+        
+        log "🔍 DEBUG: patch_url = '$patch_url'"
+        log "🔍 DEBUG: patch_hash = '$patch_hash'"
+        log "🔍 DEBUG: patch_filename = '$patch_filename'"
+        
+        # 检查是否同时存在 patch_url 和 patch_filename
         if [ -n "$patch_url" ] && [ -n "$patch_filename" ]; then
+            log "🔍 DEBUG: Both patch_url and patch_filename are present, applying patch"
             # 使用 patch_filename 作为本地补丁文件名
             local patch_file="$wrap_dir/$patch_filename"
             if [ -f "$patch_file" ]; then
@@ -177,6 +201,7 @@ prepare_cross_deps() {
                 fi
             fi
             if [ ! -f "$patch_file" ]; then
+                log "🔍 DEBUG: Patch file does not exist, downloading..."
                 curl -L "$patch_url" -o "$patch_file" || { log "❌ download $dep patch failed"; continue; }
                 local actual_patch_hash
                 actual_patch_hash=$(sha256sum "$patch_file" | awk '{print $1}')
@@ -207,10 +232,18 @@ prepare_cross_deps() {
             rm -rf "$patch_tmp_dir"
             log "✅ $dep patch applied"
         else
-            # 没有补丁时也要保证后续流程继续
-            log "ℹ️ $dep has no patch, skipping patch step"
+            log "🔍 DEBUG: Either patch_url or patch_filename is missing"
+            # 检查是否部分存在补丁信息（这种情况应该避免）
+            if [ -n "$patch_url" ] || [ -n "$patch_filename" ]; then
+                log "⚠️ $dep has incomplete patch info, skipping patch step"
+            else
+                # 没有补丁时也要保证后续流程继续
+                log "ℹ️ $dep has no patch, skipping patch step"
+            fi
+            log "🔍 DEBUG: Continuing with next steps after patch check"
         fi
 
+        log "🔍 DEBUG: Applying asm patch if needed"
         # 打补丁后，修复 asm 语法兼容性（仅针对 aarch64/ffi.c）
         if [ "$dep" = "libffi" ]; then
             local ffi_c="$src_dir/src/aarch64/ffi.c"
@@ -221,6 +254,7 @@ prepare_cross_deps() {
             fi
         fi
 
+        log "🔍 DEBUG: Copying files to wayland subprojects"
         # 只需同步到 wayland/subprojects，剩下的交叉编译交给 Meson
         local wayland_subprojects="$SRC_DIR/wayland/subprojects"
         local wayland_packagecache="$wayland_subprojects/packagecache"
@@ -241,21 +275,27 @@ prepare_cross_deps() {
             log "✅ $dep patch copied to wayland/subprojects/packagecache"
         fi
         log "✅ $dep prepared for wayland subproject and packagecache"
+        log "🔍 DEBUG: Finished processing $dep"
     done
+    log "🔍 DEBUG: All dependencies processed"
     popd >/dev/null
     # 修正：不要用 return/exit，直接让函数自然结束（shell函数默认返回0），主流程会继续执行
     # 检查 all_ok，如果有依赖失败则在 build_all 里判断
-}
+}        
 
 build_all() {
+    log "🔍 DEBUG: Starting build_all function"
     # 先准备交叉依赖
     prepare_cross_deps
     # 检查 prepare_cross_deps 是否全部成功
-    if [ $? -ne 0 ]; then
+    local prep_result=$?
+    log "🔍 DEBUG: prepare_cross_deps returned: $prep_result"
+    if [ $prep_result -ne 0 ]; then
         log "❌ prepare_cross_deps failed, aborting build_all."
         exit 1
     fi
 
+    log "🔍 DEBUG: Proceeding with building components"
     # 使用 --wrap-mode=default，允许 Meson 自动 fallback 到 subprojects（只要本地包和补丁已准备好不会重复下载）
     build_meson wayland \
         --wrap-mode=default \
@@ -277,4 +317,5 @@ build_all() {
     build_xwayland
 
     build_wlroots
+    log "🔍 DEBUG: Finished build_all function"
 }
