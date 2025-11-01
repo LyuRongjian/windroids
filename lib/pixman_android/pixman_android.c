@@ -38,7 +38,11 @@
 
 // ========== 补充缺失的编译器优化宏（放在文件开头） ==========
 #ifndef ASSUME_TRUE
-#define ASSUME_TRUE(x) __builtin_assume(x)
+# if defined(__clang__) && __clang_major__ >= 8
+#  define ASSUME_TRUE(x) __builtin_assume(x)
+# else
+#  define ASSUME_TRUE(x) do { if (!(x)) __builtin_unreachable(); } while(0)
+# endif
 #endif
 
 #ifndef FORCE_INLINE
@@ -338,17 +342,25 @@ PURE_FUNC
 static int clip_rect(int* sx, int* sy, int sw, int sh,
                      int* dx, int* dy, int dw, int dh,
                      int* w,  int* h) {
-    // 使用 __builtin_expect 优化常见路径
+    /* 基本参数校验 */
+    if (!dx || !dy || !w || !h) return 0;
     if (__builtin_expect(*w <= 0 || *h <= 0, 0)) return 0;
-    if (*dx < 0) { int shf = -(*dx); *dx = 0; *sx += shf; *w -= shf; }
-    if (*dy < 0) { int shf = -(*dy); *dy = 0; *sy += shf; *h -= shf; }
+
+    if (*dx < 0) { int shf = -(*dx); *dx = 0; if (sx) *sx += shf; *w -= shf; }
+    if (*dy < 0) { int shf = -(*dy); *dy = 0; if (sy) *sy += shf; *h -= shf; }
+
     if (*dx + *w > dw) *w = dw - *dx;
     if (*dy + *h > dh) *h = dh - *dy;
+
     if (*w <= 0 || *h <= 0) return 0;
-    if (*sx < 0) { int shf = -(*sx); *sx = 0; *dx += shf; *w -= shf; }
-    if (*sy < 0) { int shf = -(*sy); *sy = 0; *dy += shf; *h -= shf; }
-    if (*sx + *w > sw) *w = sw - *sx;
-    if (*sy + *h > sh) *h = sh - *sy;
+
+    /* 只有在 sx/sy 非 NULL 时才解引用和调整源坐标 */
+    if (sx && *sx < 0) { int shf = -(*sx); *sx = 0; *dx += shf; *w -= shf; }
+    if (sy && *sy < 0) { int shf = -(*sy); *sy = 0; *dy += shf; *h -= shf; }
+
+    if (sx && (*sx + *w > sw)) *w = sw - *sx;
+    if (sy && (*sy + *h > sh)) *h = sh - *sy;
+
     return (*w > 0 && *h > 0);
 }
 
@@ -548,8 +560,9 @@ pixman_image_create_bits_no_clear (pixman_format_code_t format,
 PIXMAN_EXPORT pixman_image_t *
 pixman_image_ref (pixman_image_t *image)
 {
-    if (image)
-        image->common.ref_count++;  /* 修正 */
+    if (!image) return NULL;
+    /* 使用原子递增以在线程环境下安全且高效地更新引用计数 */
+    __atomic_add_fetch(&image->common.ref_count, 1, __ATOMIC_ACQ_REL);
     return image;
 }
 
@@ -557,8 +570,9 @@ PIXMAN_EXPORT pixman_bool_t
 pixman_image_unref (pixman_image_t *image)
 {
     if (!image) return FALSE;
-    image->common.ref_count--;  /* 修正 */
-    if (image->common.ref_count <= 0)
+    /* 使用原子操作保证线程安全并降低分支误判成本 */
+    int ref = __atomic_sub_fetch(&image->common.ref_count, 1, __ATOMIC_ACQ_REL);
+    if (ref <= 0)
     {
         if (image->type == BITS && image->bits.own_data && image->bits.bits)
             free(image->bits.bits);
@@ -1132,7 +1146,7 @@ pixman_bool_t pixman_format_supported_source (pixman_format_code_t format)
     return pixman_format_supported_destination (format);
 }
 
-PIXMAN_API
+PIXMAN_API __attribute__((hot, optimize("O3")))
 pixman_bool_t pixman_blt (uint32_t *src_bits,
                          uint32_t *dst_bits,
                          int       src_stride,
@@ -1153,13 +1167,17 @@ pixman_bool_t pixman_blt (uint32_t *src_bits,
     {
         const uint32_t *srow = src_bits + (src_y + j) * src_stride + src_x;
         uint32_t *drow = dst_bits + (dest_y + j) * dst_stride + dest_x;
+        /* 预取源/目标行以减少内存延迟对内存搬运的影响 */
+        __builtin_prefetch(srow, 0, 1);
+        __builtin_prefetch(drow, 1, 1);
         neon_row_copy (srow, drow, width);
     }
     return TRUE;
 }
 
-// ========== Composite实现（补齐缺失） ==========
-PIXMAN_EXPORT void
+/* NOTE: 标注为热点并尽可能让编译器在此函数上优化 */
+PIXMAN_EXPORT __attribute__((hot, optimize("O3")))
+void
 pixman_image_composite32 (pixman_op_t op,
                           pixman_image_t *src,
                           pixman_image_t *mask,
@@ -1176,8 +1194,11 @@ pixman_image_composite32 (pixman_op_t op,
     if (op == PIXMAN_OP_CLEAR) {
         int dx = dest_x, dy = dest_y, w = width, h = height;
         if (!clip_rect(NULL,NULL,0,0, &dx,&dy,dest->bits.width,dest->bits.height, &w,&h)) return;
-        for (int j = 0; j < h; ++j)
-            neon_row_fill(dest->bits.bits + (dy + j) * dpitch + dx, w, 0);
+        for (int j = 0; j < h; ++j) {
+            uint32_t *row = dest->bits.bits + (dy + j) * dpitch + dx;
+            __builtin_prefetch(row, 1, 1);
+            neon_row_fill(row, w, 0);
+        }
         return;
     }
 
@@ -1193,13 +1214,19 @@ pixman_image_composite32 (pixman_op_t op,
         if (!clip_rect(NULL,NULL,0,0, &dx,&dy,dest->bits.width,dest->bits.height, &w,&h)) return;
 
         if (op == PIXMAN_OP_SRC || !mask) {
-            for (int j = 0; j < h; ++j)
-                neon_row_fill(dest->bits.bits + (dy + j) * dpitch + dx, w, color);
+            for (int j = 0; j < h; ++j) {
+                uint32_t *row = dest->bits.bits + (dy + j) * dpitch + dx;
+                __builtin_prefetch(row, 1, 1);
+                neon_row_fill(row, w, color);
+            }
         } else if (op == PIXMAN_OP_OVER && mask && mask->type == BITS) {
             const int mpitch = mask->bits.stride / 4;
             for (int j = 0; j < h; ++j) {
                 const uint32_t *mrow = mask->bits.bits + (mask_y + j) * mpitch + mask_x;
                 uint32_t *drow = dest->bits.bits + (dy + j) * dpitch + dx;
+                __builtin_prefetch(mrow, 0, 1);
+                __builtin_prefetch(drow, 1, 1);
+                #pragma clang loop vectorize(enable) interleave(enable)
                 for (int i = 0; i < w; ++i) {
                     uint8_t ma = (mrow[i] >> 24);
                     uint8_t ea = (a * ma + 255) / 255;
@@ -1213,6 +1240,7 @@ pixman_image_composite32 (pixman_op_t op,
                     uint8_t orr = er + (dr * inv + 255) / 255;
                     uint8_t og = eg + (dg * inv + 255) / 255;
                     uint8_t ob = eb + (db * inv + 255) / 255;
+
                     drow[i] = ((uint32_t)oa << 24) | ((uint32_t)orr << 16) | ((uint32_t)og << 8) | ob;
                 }
             }
@@ -1230,13 +1258,21 @@ pixman_image_composite32 (pixman_op_t op,
         uint32_t *dbase = dest->bits.bits + dy * dpitch + dx;
 
         if (op == PIXMAN_OP_SRC && !mask) {
-            for (int j = 0; j < h; ++j)
-                neon_row_copy(sbase + j * spitch, dbase + j * dpitch, w);
+            for (int j = 0; j < h; ++j) {
+                const uint32_t *srow = sbase + j * spitch;
+                uint32_t *drow = dbase + j * dpitch;
+                __builtin_prefetch(srow, 0, 1);
+                __builtin_prefetch(drow, 1, 1);
+                neon_row_copy(srow, drow, w);
+            }
         } else if (op == PIXMAN_OP_OVER && !mask) {
             for (int j = 0; j < h; ++j) {
                 const uint32_t *srow = sbase + j * spitch;
                 uint32_t *drow = dbase + j * dpitch;
+                __builtin_prefetch(srow, 0, 1);
+                __builtin_prefetch(drow, 1, 1);
                 int i = 0;
+                /* 使用向量化/NEON 路径分块处理，再用标量回退 */
                 for (; i + 8 <= w; i += 8)
                     neon_over_8px(srow + i, drow + i);
                 for (; i < w; ++i) {
@@ -1252,65 +1288,86 @@ pixman_image_composite32 (pixman_op_t op,
                     drow[i] = ((uint32_t)oa<<24)|((uint32_t)orr<<16)|((uint32_t)og<<8)|ob;
                 }
             }
+        } else if (op == PIXMAN_OP_OVER && mask && mask->type == BITS) {
+            const int mpitch = mask->bits.stride / 4;
+            for (int j = 0; j < h; ++j) {
+                const uint32_t *srow = sbase + j * spitch;
+                const uint32_t *mrow = mask->bits.bits + (mask_y + (j + (sy - src_y))) * mpitch + mask_x;
+                uint32_t *drow = dbase + j * dpitch;
+                __builtin_prefetch(srow, 0, 1);
+                __builtin_prefetch(mrow, 0, 1);
+                __builtin_prefetch(drow, 1, 1);
+                int i = 0;
+                for (; i + 8 <= w; i += 8) {
+                    /* 对于带 mask 的路径，先合并 mask alpha 到 src alpha，再用 neon_over_8px */
+                    uint32_t tmp_src[8];
+                    for (int k = 0; k < 8; ++k) {
+                        uint32_t sv = srow[i + k];
+                        uint8_t sa = sv >> 24;
+                        uint8_t ma = (mrow[i + k] >> 24);
+                        uint8_t new_a = (sa * ma + 255) / 255;
+                        tmp_src[k] = (sv & 0x00FFFFFF) | ((uint32_t)new_a << 24);
+                    }
+                    neon_over_8px(tmp_src, drow + i);
+                }
+                for (; i < w; ++i) {
+                    uint32_t sv = srow[i]; uint8_t sa = sv >> 24;
+                    uint8_t ma = (mrow[i] >> 24);
+                    uint8_t final_a = (sa * ma + 255) / 255;
+                    uint32_t srcv = (sv & 0x00FFFFFF) | ((uint32_t)final_a << 24);
+                    /* 标量 OVER */
+                    if (final_a == 0xFF) { drow[i] = srcv; continue; }
+                    uint32_t dv = drow[i]; uint8_t inv = 255 - final_a;
+                    uint8_t sr=(srcv>>16)&0xFF, sg=(srcv>>8)&0xFF, sb=srcv&0xFF;
+                    uint8_t da=dv>>24, dr=(dv>>16)&0xFF, dg=(dv>>8)&0xFF, db=dv&0xFF;
+                    uint8_t oa = final_a + (da * inv + 255) / 255;
+                    uint8_t orr = sr + (dr * inv + 255) / 255;
+                    uint8_t og = sg + (dg * inv + 255) / 255;
+                    uint8_t ob = sb + (db * inv + 255) / 255;
+                    drow[i] = ((uint32_t)oa<<24)|((uint32_t)orr<<16)|((uint32_t)og<<8)|ob;
+                }
+            }
         }
     }
 }
 
-// ========== Fill 实现 ==========
-PIXMAN_EXPORT pixman_bool_t
-pixman_fill (uint32_t *bits,
-             int       stride,
-             int       bpp,
-             int       x,
-             int       y,
-             int       width,
-             int       height,
-             uint32_t  _xor)
+/* ========== 补充图像控制 API ========== */
+PIXMAN_EXPORT void
+pixman_image_set_repeat (pixman_image_t *image, pixman_repeat_t repeat)
 {
-    if (!bits || width <= 0 || height <= 0)
-        return FALSE;
-
-    if (bpp == 32)
-    {
-        for (int j = 0; j < height; ++j)
-        {
-            uint32_t *row = bits + (y + j) * stride + x;
-            neon_row_fill (row, width, _xor);
-        }
-        return TRUE;
-    }
-    else if (bpp == 16)
-    {
-        uint16_t val = (uint16_t)_xor;
-        for (int j = 0; j < height; ++j)
-        {
-            uint16_t *row = (uint16_t *)bits + (y + j) * stride + x;
-            for (int i = 0; i < width; ++i)
-                row[i] = val;
-        }
-        return TRUE;
-    }
-    else if (bpp == 8)
-    {
-        uint8_t val = (uint8_t)_xor;
-        for (int j = 0; j < height; ++j)
-        {
-            uint8_t *row = (uint8_t *)bits + (y + j) * stride + x;
-            neon_memset_u8 (row, val, width);
-        }
-        return TRUE;
-    }
-
-    return FALSE;
+    if (!image) return;
+    image->common.repeat = repeat;
 }
 
-// ========== Version 实现（补齐） ==========
-PIXMAN_EXPORT int
-pixman_version (void) {
-    return PIXMAN_VERSION;
+PIXMAN_EXPORT pixman_bool_t
+pixman_image_set_filter (pixman_image_t       *image,
+                         pixman_filter_t       filter,
+                         const pixman_fixed_t *params,
+                         int                   n_params)
+{
+    if (!image) return FALSE;
+    image->common.filter = filter;
+    image->common.filter_params = params;
+    image->common.n_filter_params = n_params;
+    return TRUE;
 }
 
-PIXMAN_EXPORT const char *
-pixman_version_string (void) {
-    return PIXMAN_VERSION_STRING;
+/* ========== 兼容旧版 composite（直接转发到 composite32） ========== */
+PIXMAN_EXPORT void
+pixman_image_composite (pixman_op_t      op,
+                        pixman_image_t  *src,
+                        pixman_image_t  *mask,
+                        pixman_image_t  *dest,
+                        int16_t          src_x,
+                        int16_t          src_y,
+                        int16_t          mask_x,
+                        int16_t          mask_y,
+                        int16_t          dest_x,
+                        int16_t          dest_y,
+                        uint16_t         width,
+                        uint16_t         height)
+{
+    pixman_image_composite32 (op, src, mask, dest,
+                              src_x, src_y, mask_x, mask_y,
+                              dest_x, dest_y, width, height);
 }

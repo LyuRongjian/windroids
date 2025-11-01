@@ -508,12 +508,78 @@ pixman_bool_t pixman_fill               (uint32_t           *bits,
 					 int                 height,
 					 uint32_t            _xor);
 
+/* Format / BLT support (implemented in pixman_android.c) */
+PIXMAN_API
+pixman_bool_t pixman_format_supported_destination (pixman_format_code_t format);
+
+PIXMAN_API
+pixman_bool_t pixman_format_supported_source (pixman_format_code_t format);
+
+/* Block transfer (BLT) */
+PIXMAN_API
+pixman_bool_t pixman_blt (uint32_t *src_bits,
+                          uint32_t *dst_bits,
+                          int       src_stride,
+                          int       dst_stride,
+                          int       src_bpp,
+                          int       dst_bpp,
+                          int       src_x,
+                          int       src_y,
+                          int       dest_x,
+                          int       dest_y,
+                          int       width,
+                          int       height);
+
 /* Version functions */
 PIXMAN_API
 int           pixman_version            (void);
 
 PIXMAN_API
 const char*   pixman_version_string     (void);
+
+/* Image repeat modes */
+typedef enum {
+    PIXMAN_REPEAT_NONE,
+    PIXMAN_REPEAT_NORMAL,
+    PIXMAN_REPEAT_PAD,
+    PIXMAN_REPEAT_REFLECT
+} pixman_repeat_t;
+
+/* Image filter types */
+typedef enum {
+    PIXMAN_FILTER_FAST,
+    PIXMAN_FILTER_GOOD,
+    PIXMAN_FILTER_BEST,
+    PIXMAN_FILTER_NEAREST,
+    PIXMAN_FILTER_BILINEAR,
+    PIXMAN_FILTER_CONVOLUTION
+} pixman_filter_t;
+
+/* Additional image control functions */
+PIXMAN_API
+void pixman_image_set_repeat (pixman_image_t    *image,
+                               pixman_repeat_t    repeat);
+
+PIXMAN_API
+pixman_bool_t pixman_image_set_filter (pixman_image_t       *image,
+                                        pixman_filter_t       filter,
+                                        const pixman_fixed_t *params,
+                                        int                   n_params);
+
+/* Legacy composite (for old xorg compatibility) */
+PIXMAN_API
+void pixman_image_composite (pixman_op_t      op,
+                             pixman_image_t  *src,
+                             pixman_image_t  *mask,
+                             pixman_image_t  *dest,
+                             int16_t          src_x,
+                             int16_t          src_y,
+                             int16_t          mask_x,
+                             int16_t          mask_y,
+                             int16_t          dest_x,
+                             int16_t          dest_y,
+                             uint16_t         width,
+                             uint16_t         height);
 
 PIXMAN_END_DECLS
 
