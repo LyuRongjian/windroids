@@ -61,6 +61,33 @@ PIXMAN_BEGIN_DECLS
 
 typedef int pixman_bool_t;
 
+#ifndef FALSE
+#define FALSE 0
+#endif
+
+#ifndef TRUE
+#define TRUE 1
+#endif
+
+/* Format encoding (must be defined BEFORE using in enum) */
+#define PIXMAN_FORMAT(bpp,type,a,r,g,b) (((bpp) << 24) |  \
+                     ((type) << 16) | \
+                     ((a) << 12) |    \
+                     ((r) << 8) |     \
+                     ((g) << 4) |     \
+                     ((b)))
+
+#define PIXMAN_TYPE_OTHER       0
+#define PIXMAN_TYPE_A           1
+#define PIXMAN_TYPE_ARGB        2
+#define PIXMAN_TYPE_ABGR        3
+#define PIXMAN_TYPE_COLOR       4
+#define PIXMAN_TYPE_GRAY        5
+#define PIXMAN_TYPE_YUY2        6
+#define PIXMAN_TYPE_YV12        7
+#define PIXMAN_TYPE_BGRA        8
+#define PIXMAN_TYPE_RGBA        9
+
 /* Fixed-point types */
 typedef int32_t pixman_fixed_t;
 
@@ -368,34 +395,24 @@ PIXMAN_API
 void			pixman_region32_clear		   (pixman_region32_t *region);
 
 /* Image types and structures */
-typedef struct pixman_image pixman_image_t;
+typedef union pixman_image pixman_image_t;
 
-typedef enum {
-    PIXMAN_a8r8g8b8 =	 PIXMAN_FORMAT(32,PIXMAN_TYPE_ARGB,8,8,8,8),
-    PIXMAN_x8r8g8b8 =	 PIXMAN_FORMAT(32,PIXMAN_TYPE_ARGB,0,8,8,8),
-    PIXMAN_a8b8g8r8 =	 PIXMAN_FORMAT(32,PIXMAN_TYPE_ABGR,8,8,8,8),
-    PIXMAN_x8b8g8r8 =	 PIXMAN_FORMAT(32,PIXMAN_TYPE_ABGR,0,8,8,8),
-    PIXMAN_b8g8r8a8 =	 PIXMAN_FORMAT(32,PIXMAN_TYPE_BGRA,8,8,8,8),
-    PIXMAN_b8g8r8x8 =	 PIXMAN_FORMAT(32,PIXMAN_TYPE_BGRA,0,8,8,8),
-    PIXMAN_r8g8b8a8 =	 PIXMAN_FORMAT(32,PIXMAN_TYPE_RGBA,8,8,8,8),
-    PIXMAN_r8g8b8x8 =	 PIXMAN_FORMAT(32,PIXMAN_TYPE_RGBA,0,8,8,8),
-    PIXMAN_r5g6b5 =	 PIXMAN_FORMAT(16,PIXMAN_TYPE_ARGB,0,5,6,5),
-    PIXMAN_b5g6r5 =	 PIXMAN_FORMAT(16,PIXMAN_TYPE_ABGR,0,5,6,5),
-    PIXMAN_a8 =		 PIXMAN_FORMAT(8,PIXMAN_TYPE_A,8,0,0,0),
-    PIXMAN_a1 =		 PIXMAN_FORMAT(1,PIXMAN_TYPE_A,1,0,0,0),
+/* 修正：移除 typedef，直接使用 enum 作为类型 */
+typedef enum pixman_format_code
+{
+    PIXMAN_a8r8g8b8 =    PIXMAN_FORMAT(32,PIXMAN_TYPE_ARGB,8,8,8,8),
+    PIXMAN_x8r8g8b8 =    PIXMAN_FORMAT(32,PIXMAN_TYPE_ARGB,0,8,8,8),
+    PIXMAN_a8b8g8r8 =    PIXMAN_FORMAT(32,PIXMAN_TYPE_ABGR,8,8,8,8),
+    PIXMAN_x8b8g8r8 =    PIXMAN_FORMAT(32,PIXMAN_TYPE_ABGR,0,8,8,8),
+    PIXMAN_b8g8r8a8 =    PIXMAN_FORMAT(32,PIXMAN_TYPE_BGRA,8,8,8,8),
+    PIXMAN_b8g8r8x8 =    PIXMAN_FORMAT(32,PIXMAN_TYPE_BGRA,0,8,8,8),
+    PIXMAN_r8g8b8a8 =    PIXMAN_FORMAT(32,PIXMAN_TYPE_RGBA,8,8,8,8),
+    PIXMAN_r8g8b8x8 =    PIXMAN_FORMAT(32,PIXMAN_TYPE_RGBA,0,8,8,8),
+    PIXMAN_r5g6b5 =      PIXMAN_FORMAT(16,PIXMAN_TYPE_ARGB,0,5,6,5),
+    PIXMAN_b5g6r5 =      PIXMAN_FORMAT(16,PIXMAN_TYPE_ABGR,0,5,6,5),
+    PIXMAN_a8 =          PIXMAN_FORMAT(8,PIXMAN_TYPE_A,8,0,0,0),
+    PIXMAN_a1 =          PIXMAN_FORMAT(1,PIXMAN_TYPE_A,1,0,0,0)
 } pixman_format_code_t;
-
-#define PIXMAN_FORMAT(bpp,type,a,r,g,b)	(((bpp) << 24) |  \
-					 ((type) << 16) | \
-					 ((a) << 12) |	  \
-					 ((r) << 8) |	  \
-					 ((g) << 4) |	  \
-					 ((b)))
-
-#define PIXMAN_TYPE_ARGB	2
-#define PIXMAN_TYPE_ABGR	3
-#define PIXMAN_TYPE_BGRA	8
-#define PIXMAN_TYPE_RGBA	9
 
 /* Image functions */
 PIXMAN_API

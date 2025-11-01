@@ -46,10 +46,10 @@ log "🔄 Start time: $(date)"
 # downloads_all
 
 # Download and install NDK into project (not /tmp)
-# download_ndk
+download_ndk
 
 # Create cross/native files (uses NDK_DIR)
-# create_cross_and_native
+create_cross_and_native
 
 # Build libraries and components
 build_all

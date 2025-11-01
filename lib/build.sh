@@ -32,6 +32,18 @@ build_meson() {
         export CFLAGS="${CFLAGS:-} -std=gnu99"
     fi
 
+    # ==== pixman 特殊处理（针对 NDK/Android） ====
+    # 在 NDK 下编译 pixman 易遇到：缺少 Android 宏、PIC 要求、默认生成 shared 导致链接问题、测试/文档依赖等。
+    # 这里为 pixman 注入安全的 CFLAGS/LDFLAGS 与 meson 选项以提高通过率。
+    local MESON_EXTRA_ARGS=()
+    if [ "$dir" = "pixman" ]; then
+        export CFLAGS="${CFLAGS:-} -D__ANDROID__ -DANDROID -fPIC -march=armv8-a -O3"
+        export LDFLAGS="${LDFLAGS:-} -L$OUTPUT_DIR/lib -Wl,--exclude-libs,ALL"
+        # 禁用汇编以规避 NDK 宏兼容问题（上游 pixman 的 ARM asm 依赖 GNU AS 宏）
+        MESON_EXTRA_ARGS+=( -Ddefault_library=static -Dtests=disabled -Dlibpng=disabled -Dasm=disabled )
+        log "🔧 pixman: applying Android-specific CFLAGS/LDFLAGS and meson args (asm=disabled)"
+    fi
+
     # 移除：不再尝试预编译 subprojects/libffi，交给 wrap fallback 处理
 
     # 优先让 pkg-config 查找 subprojects/libffi/build 下的 libffi.pc
@@ -56,12 +68,52 @@ build_meson() {
     export LDFLAGS="${LDFLAGS:-} -L$OUTPUT_DIR/lib"
 
     if [ -d build ]; then
-        meson setup --reconfigure build --cross-file "$PROJECT_ROOT/android-cross.txt" --native-file "$PROJECT_ROOT/native.ini" --prefix "$OUTPUT_DIR" --libdir=lib "$@" || { popd >/dev/null; return 1; }
+        if [ "$dir" = "pixman" ]; then
+            meson setup --reconfigure build --cross-file "$PROJECT_ROOT/android-cross.txt" --native-file "$PROJECT_ROOT/native.ini" --prefix "$OUTPUT_DIR" --libdir=lib "$@" "${MESON_EXTRA_ARGS[@]}" >"$PROJECT_ROOT/pixman-meson-setup.log" 2>&1 || {
+                log "❌ meson setup for pixman failed — see $PROJECT_ROOT/pixman-meson-setup.log"
+                log "ℹ️ Common fixes: ensure cross-file toolchain is correct, disable optional deps (libpng), ensure pkg-config finds libffi, and inspect the meson log above."
+                log "ℹ️ To debug: tail -n 200 $PROJECT_ROOT/pixman-meson-setup.log"
+                # print short excerpt to help interactive debugging
+                echo "---- meson setup log excerpt (last 100 lines) ----"
+                tail -n 100 "$PROJECT_ROOT/pixman-meson-setup.log" | sed -n '1,100p'
+                popd >/dev/null
+                return 1
+            }
+        else
+            meson setup --reconfigure build --cross-file "$PROJECT_ROOT/android-cross.txt" --native-file "$PROJECT_ROOT/native.ini" --prefix "$OUTPUT_DIR" --libdir=lib "$@" "${MESON_EXTRA_ARGS[@]}" || { popd >/dev/null; return 1; }
+        fi
     else
-        meson setup build --cross-file "$PROJECT_ROOT/android-cross.txt" --native-file "$PROJECT_ROOT/native.ini" --prefix "$OUTPUT_DIR" --libdir=lib "$@" || { popd >/dev/null; return 1; }
+        if [ "$dir" = "pixman" ]; then
+            meson setup build --cross-file "$PROJECT_ROOT/android-cross.txt" --native-file "$PROJECT_ROOT/native.ini" --prefix "$OUTPUT_DIR" --libdir=lib "$@" "${MESON_EXTRA_ARGS[@]}" >"$PROJECT_ROOT/pixman-meson-setup.log" 2>&1 || {
+                log "❌ meson setup for pixman failed — see $PROJECT_ROOT/pixman-meson-setup.log"
+                log "ℹ️ Common fixes: ensure cross-file toolchain is correct, disable optional deps (libpng), ensure pkg-config finds libffi, and inspect the meson log above."
+                echo "---- meson setup log excerpt (last 100 lines) ----"
+                tail -n 100 "$PROJECT_ROOT/pixman-meson-setup.log" | sed -n '1,100p'
+                popd >/dev/null
+                return 1
+            }
+        else
+            meson setup build --cross-file "$PROJECT_ROOT/android-cross.txt" --native-file "$PROJECT_ROOT/native.ini" --prefix "$OUTPUT_DIR" --libdir=lib "$@" "${MESON_EXTRA_ARGS[@]}" || { popd >/dev/null; return 1; }
+        fi
     fi
-    ninja -C build || { popd >/dev/null; return 1; }
-    ninja -C build install || { popd >/dev/null; return 1; }
+    if [ "$dir" = "pixman" ]; then
+        ninja -C build >"$PROJECT_ROOT/pixman-build.log" 2>&1 || {
+            log "❌ ninja build for pixman failed — see $PROJECT_ROOT/pixman-build.log"
+            echo "---- pixman ninja build log excerpt (last 200 lines) ----"
+            tail -n 200 "$PROJECT_ROOT/pixman-build.log" | sed -n '1,200p'
+            popd >/dev/null
+            return 1
+        }
+        ninja -C build install >>"$PROJECT_ROOT/pixman-build.log" 2>&1 || {
+            log "❌ ninja install for pixman failed — see $PROJECT_ROOT/pixman-build.log"
+            tail -n 200 "$PROJECT_ROOT/pixman-build.log" | sed -n '1,200p'
+            popd >/dev/null
+            return 1
+        }
+    else
+        ninja -C build || { popd >/dev/null; return 1; }
+        ninja -C build install || { popd >/dev/null; return 1; }
+    fi
     touch "$marker"
     log "✅ $dir built successfully"
     popd >/dev/null
@@ -109,8 +161,72 @@ build_xwayland() {
     popd >/dev/null
 }
 
+build_pixman_android() {
+    # 从 android-cross.txt 提取 NDK 路径
+    local ndk_path=""
+    if [ -f "$PROJECT_ROOT/android-cross.txt" ]; then
+        local cc_path=$(grep "^c = " "$PROJECT_ROOT/android-cross.txt" | cut -d"'" -f2)
+        if [ -n "$cc_path" ]; then
+            ndk_path=$(dirname $(dirname $(dirname $(dirname $(dirname $(dirname "$cc_path"))))))
+        fi
+    fi
+    
+    # Fallback
+    if [ -z "$ndk_path" ] || [ ! -d "$ndk_path" ]; then
+        ndk_path="${PROJECT_ROOT}/ndk"
+    fi
+    
+    if [ ! -d "$ndk_path" ]; then
+        log "❌ Cannot find NDK"
+        return 1
+    fi
+    
+    export ANDROID_NDK="$ndk_path"
+    
+    # 调用子脚本
+    bash "$PROJECT_ROOT/lib/pixman_android/build.sh" "$OUTPUT_DIR" "$ndk_path" || {
+        log "❌ Failed to build pixman_android"
+        return 1
+    }
+}
+
+build_drm_shim() {
+    # 从环境变量获取 NDK（pixman 已设置）
+    local ndk_path="${ANDROID_NDK:-$PROJECT_ROOT/ndk}"
+    
+    if [ ! -d "$ndk_path" ]; then
+        log "❌ Cannot find NDK"
+        return 1
+    fi
+    
+    # 调用子脚本
+    bash "$PROJECT_ROOT/lib/libdrm_android/build.sh" "$OUTPUT_DIR" "$ndk_path" || {
+        log "❌ Failed to build drm_shim"
+        return 1
+    }
+}
+
 build_wlroots() {
-    build_meson wlroots -Dexamples=false -Dbackends=drm,headless -Drenderers=gl,gbm -Dgbm=enabled -Dlibffi:exe_static_tramp=true
+    # 确保先编译 drm_shim
+    build_drm_shim || {
+        log "❌ drm_shim not built, cannot build wlroots"
+        return 1
+    }
+    
+    # 设置环境变量
+    export PKG_CONFIG_PATH="$OUTPUT_DIR/lib/pkgconfig:${PKG_CONFIG_PATH:-}"
+    export CFLAGS="-I$OUTPUT_DIR/include -I$OUTPUT_DIR/include/libdrm ${CFLAGS:-}"
+    export LDFLAGS="-L$OUTPUT_DIR/lib -ldrm_shim ${LDFLAGS:-}"
+    
+    build_meson wlroots \
+        -Dexamples=false \
+        -Dbackends=drm,headless \
+        -Drenderers=gles2 \
+        -Dxwayland=enabled \
+        -Dlibseat=disabled \
+        -Dudev=disabled \
+        -Dsystemd=disabled \
+        -Dlibffi:exe_static_tramp=true
 }
 
 prepare_cross_deps() {
@@ -234,18 +350,28 @@ build_all() {
     # 先准备交叉依赖
     prepare_cross_deps
 
+    # 使用自定义 pixman 实现（替代 Meson 构建）
+    build_pixman_android || {
+        log "❌ Failed to build pixman_android"
+        return 1
+    }
+
+    # 使用自定义 libdrm 实现（替代 Meson 构建）
+    build_drm_shim || {
+        log "❌ Failed to build drm_shim"
+        return 1
+    }
+
     # 使用 --wrap-mode=default，允许 Meson 自动 fallback 到 subprojects
     build_meson wayland \
         --wrap-mode=default \
         -Dscanner=false \
         -Dlibraries=true \
-        -Ddocumentation=false \
-        -Dtests=false \
+        -Dtests=disabled \
         -Dlibffi:exe_static_tramp=true \
         -Dlibffi:c_std=gnu99 \
         -Dlibffi:c_args='-Dasm=__asm__'
-    build_meson libdrm
-    build_meson pixman
+
     build_meson libxkbcommon
 
     build_autotools xorgproto
@@ -255,6 +381,6 @@ build_all() {
     build_autotools libxkbfile
 
     build_xwayland
-
     build_wlroots
+
 }
