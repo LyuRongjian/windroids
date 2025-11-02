@@ -40,10 +40,10 @@ log "🔄 Start time: $(date)"
 . "$LIBDIR/wine.sh"
 
 # Ensure basic dependencies (pipx/meson/git/curl/...); does not install system wayland-scanner
-# ensure_dependencies
+ensure_dependencies
 
 # Download sources and build host tools (wayland-scanner)
-# downloads_all
+downloads_all
 
 # Download and install NDK into project (not /tmp)
 download_ndk

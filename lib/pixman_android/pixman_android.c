@@ -157,31 +157,27 @@ static inline void neon_row_copy (const uint32_t * restrict src,
         __builtin_prefetch (src, 0, 1);
         __builtin_prefetch (dst, 1, 1);
         
-        // 使用 __builtin_assume 告诉编译器 w 的范围（优化循环展开）
         ASSUME_TRUE(w >= 0 && w <= 8192);
         
         int n = w;
         
-        // 使用非临时 load/store（绕过 L1 cache，适用于大块拷贝）
         #if defined(__aarch64__)
         for (; n >= 8; n -= 8, src += 8, dst += 8)
         {
-            // 使用 vld1q_u32_x2 一次加载 8 个像素（减少指令数）
             uint32x4x2_t v = vld1q_u32_x2(src);
             vst1q_u32_x2(dst, v);
         }
         #endif
         
-        // 4 像素并行
         for (; n >= 4; n -= 4, src += 4, dst += 4)
         {
             uint32x4_t v = vld1q_u32 (src);
             vst1q_u32 (dst, v);
         }
         
-        // 剩余像素（使用 __builtin_memcpy_inline 优化）
+        // 修复：使用标准 memcpy 替代 __builtin_memcpy_inline（兼容性更好）
         if (n > 0) {
-            __builtin_memcpy_inline(dst, src, n * 4);
+            memcpy(dst, src, (size_t)n * 4);
         }
         return;
     }
