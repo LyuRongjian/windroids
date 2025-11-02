@@ -190,43 +190,26 @@ build_pixman_android() {
     }
 }
 
-build_drm_shim() {
-    # 从环境变量获取 NDK（pixman 已设置）
-    local ndk_path="${ANDROID_NDK:-$PROJECT_ROOT/ndk}"
-    
-    if [ ! -d "$ndk_path" ]; then
-        log "❌ Cannot find NDK"
-        return 1
-    fi
-    
-    # 调用子脚本
-    bash "$PROJECT_ROOT/lib/libdrm_android/build.sh" "$OUTPUT_DIR" "$ndk_path" || {
-        log "❌ Failed to build drm_shim"
-        return 1
-    }
-}
+# DRM dependencies are removed as per requirements
 
 build_wlroots() {
-    # 确保先编译 drm_shim
-    build_drm_shim || {
-        log "❌ drm_shim not built, cannot build wlroots"
-        return 1
-    }
-    
+    echo "Building wlroots without DRM dependencies..."
     # 设置环境变量
     export PKG_CONFIG_PATH="$OUTPUT_DIR/lib/pkgconfig:${PKG_CONFIG_PATH:-}"
-    export CFLAGS="-I$OUTPUT_DIR/include -I$OUTPUT_DIR/include/libdrm ${CFLAGS:-}"
-    export LDFLAGS="-L$OUTPUT_DIR/lib -ldrm_shim ${LDFLAGS:-}"
+    export CFLAGS="-I$OUTPUT_DIR/include ${CFLAGS:-}"
+    export LDFLAGS="-L$OUTPUT_DIR/lib ${LDFLAGS:-}"
     
+    # Ensure no DRM dependencies are used
     build_meson wlroots \
         -Dexamples=false \
-        -Dbackends=drm,headless \
-        -Drenderers=gles2 \
+        -Dbackends=headless \
+        -Drenderers=pixman,gles2 \
         -Dxwayland=enabled \
         -Dlibseat=disabled \
         -Dudev=disabled \
         -Dsystemd=disabled \
-        -Dlibffi:exe_static_tramp=true
+        -Dlibffi:exe_static_tramp=true \
+        -Dlinux-dmabuf=disabled
 }
 
 prepare_cross_deps() {
@@ -343,6 +326,14 @@ prepare_cross_deps() {
     fi
 }
 
+build_compositor() {
+    # 调用子脚本构建 compositor 库
+    bash "$PROJECT_ROOT/lib/compositor/build.sh" "$OUTPUT_DIR" "$ANDROID_NDK" || {
+        log "❌ Failed to build compositor library"
+        return 1
+    }
+}
+
 build_all() {
     # 编译前清理旧的 build.log
     clean_build_logs
@@ -353,12 +344,6 @@ build_all() {
     # 使用自定义 pixman 实现（替代 Meson 构建）
     build_pixman_android || {
         log "❌ Failed to build pixman_android"
-        return 1
-    }
-
-    # 使用自定义 libdrm 实现（替代 Meson 构建）
-    build_drm_shim || {
-        log "❌ Failed to build drm_shim"
         return 1
     }
 
@@ -382,5 +367,8 @@ build_all() {
 
     build_xwayland
     build_wlroots
+    
+    # 构建 compositor 库
+    build_compositor
 
 }

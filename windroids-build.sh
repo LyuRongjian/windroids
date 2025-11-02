@@ -1,62 +1,57 @@
 #!/bin/bash
-# entrypoint bootstrap for WinDroids build
-set -euo pipefail
 
-# load environment (paths, dirs)
-. "$(dirname "$0")/lib/env.sh"
+# WinDroids Build Script - 构建 wlroots + Xwayland + Vulkan 合成器库
 
-# 尽早加载 utils，以便之后可以直接调用 log()
-if [ -f "$LIBDIR/utils.sh" ]; then
-	# shellcheck source=/dev/null
-	. "$LIBDIR/utils.sh"
-else
-	# 回退实现，保证 log 在 utils 不可用时仍然存在
-	log() {
-		echo "[$(date +'%H:%M:%S')] $*"
-	}
-fi
+set -e
 
-# ensure lib dir exists
-if [ ! -d "$PROJECT_ROOT/lib" ] && [ -d "$PROJECT_ROOT/../lib" ]; then
-	# nothing
-	:
-fi
+# 项目根目录
+PROJECT_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 
-# redirect logs (after PROJECT_ROOT exists)
-mkdir -p "$PROJECT_ROOT"
+# 确保LIBDIR变量存在
+LIBDIR="$PROJECT_ROOT/lib"
+
+# 加载环境变量和工具函数
+source "$LIBDIR/env.sh"
+source "$LIBDIR/utils.sh"
+
+# 确保日志文件存在
 touch "$LOG_FILE"
-exec > >(tee -i "$LOG_FILE")
-exec 2>&1
 
-log "🚀 WinDroids: Build Started"
-log "🔄 Start time: $(date)"
+# 主构建函数
+main() {
+    log "🚀 开始构建 WinDroids 项目"
+    log "📁 项目根目录: $PROJECT_ROOT"
+    log "📁 输出目录: $OUTPUT_DIR"
+    
+    # 加载其他脚本
+    source "$LIBDIR/downloads.sh"
+    source "$LIBDIR/ndk.sh"
+    source "$LIBDIR/build.sh"
+    
+    # 下载 NDK
+    log "⬇️  下载 Android NDK"
+    download_ndk
+    
+    # 创建交叉编译配置文件
+    log "⚙️  创建交叉编译配置文件"
+    create_cross_and_native
+    
+    # 下载源码
+    log "⬇️  下载组件源码"
+    downloads_all
+    
+    # 构建所有组件
+    log "🔧 构建所有组件"
+    build_all
+    
+    log "🎉 WinDroids 构建完成！"
+    log "📁 输出目录: $OUTPUT_DIR"
+    log "📚 主要产物:"
+    log "   - libcompositor.a / libcompositor.so (合成器库)"
+    log "   - libwlroots.a (wlroots 静态库)"
+    log "   - xwayland (Xwayland 可执行文件)"
+    log "📄 头文件: $OUTPUT_DIR/include/compositor.h"
+}
 
-# load helpers and modules
-. "$LIBDIR/utils.sh"
-. "$LIBDIR/deps.sh"
-. "$LIBDIR/downloads.sh"
-. "$LIBDIR/ndk.sh"
-. "$LIBDIR/build.sh"
-. "$LIBDIR/wine.sh"
-
-# Ensure basic dependencies (pipx/meson/git/curl/...); does not install system wayland-scanner
-ensure_dependencies
-
-# Download sources and build host tools (wayland-scanner)
-downloads_all
-
-# Download and install NDK into project (not /tmp)
-download_ndk
-
-# Create cross/native files (uses NDK_DIR)
-create_cross_and_native
-
-# Build libraries and components
-build_all
-
-# Setup Wine integration artifacts
-setup_wine_integration
-
-log "🎉 Build completed!"
-log "📁 Output directory: $OUTPUT_DIR"
-log "🔄 Finish time: $(date)"
+# 执行主函数
+main | tee -a "$LOG_FILE"
