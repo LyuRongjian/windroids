@@ -203,3 +203,94 @@ android {
 3. 支持更多输入设备类型
 4. 添加 OpenGL ES 作为备选渲染后端
 5. 优化内存使用和渲染性能
+
+
+## 优化建议
+
+### 1. 函数接口与声明优化
+
+- **函数声明完整性**：已修复 `is_point_in_xwayland_surface` 函数的静态声明缺失问题，但其他静态函数如 `is_point_in_wayland_window`、`is_point_in_decoration` 等也应该在头文件中添加适当的静态声明，以提高代码的一致性。
+
+- **函数参数一致性**：检查 `compositor_handle_input` 函数的文档注释，确保所有事件类型常量名称与实际代码使用的 `COMPOSITOR_INPUT_*` 格式一致。
+
+### 2. Wayland 窗口功能实现
+
+- **功能完善**：代码中有多处标记为 `TODO: 实现Wayland窗口XXX逻辑` 的注释，需要完成这些功能实现，包括：
+  - Wayland窗口焦点设置
+  - Wayland窗口激活逻辑
+  - Wayland窗口关闭逻辑
+  - Wayland窗口大小调整逻辑
+  - Wayland窗口移动逻辑
+  - Wayland窗口信息获取
+  - Wayland窗口最小化/最大化/还原
+  - Wayland窗口透明度设置
+
+### 3. 窗口状态管理优化
+
+- **状态保存**：当前窗口最小化和还原实现较为简单，使用了将窗口移出屏幕的方式。建议实现更完善的窗口状态管理，使用结构体存储窗口的原始位置和大小，以便更精确地还原窗口状态。
+
+```c
+// 建议添加窗口状态结构体
+typedef struct {
+    int saved_x, saved_y;
+    int saved_width, saved_height;
+    bool is_minimized;
+    bool is_maximized;
+    float opacity;
+    // 其他窗口状态...
+} WindowState;
+```
+
+### 4. 输入事件处理改进
+
+- **事件转发逻辑**：实现所有标记为 `TODO: 实现具体的事件转发逻辑` 的部分，确保鼠标和键盘事件能够正确转发到相应的窗口。
+
+- **鼠标光标管理**：添加鼠标悬停效果和光标形状变化的实现。
+
+### 5. 错误处理增强
+
+- **错误码定义**：虽然已添加 `COMPOSITOR_ERROR_INVALID_PARAMETER` 错误码，但建议为所有功能模块定义更具体的错误码，以提高错误诊断的准确性。
+
+- **统一错误报告**：确保所有错误处理路径都设置了适当的错误代码和错误消息。
+
+### 6. 代码可维护性提升
+
+- **减少重复代码**：在窗口管理相关函数中存在大量重复逻辑，特别是在遍历窗口列表方面。建议提取公共函数，如：
+
+```c
+// 建议添加查找窗口的公共函数
+struct wlr_xwayland_surface* find_xwayland_surface_by_title(const char* window_title) {
+    struct wlr_xwayland_surface *surface;
+    wl_list_for_each(surface, &compositor_state.xwayland_surfaces, link) {
+        if (surface->title && strcmp(surface->title, window_title) == 0) {
+            return surface;
+        }
+    }
+    return NULL;
+}
+```
+
+- **参数验证集中化**：在所有公共API函数开始处添加参数验证，并将常见的验证逻辑提取为辅助函数。
+
+### 7. 性能优化
+
+- **渲染优化**：进一步优化 `render_frame` 函数，确保只在必要时进行重绘。
+
+- **链表操作优化**：在处理大量窗口时，优化窗口链表的搜索和排序操作，考虑使用更高效的数据结构。
+
+### 8. 资源管理
+
+- **内存泄漏检查**：确保在所有错误处理路径上都正确释放分配的内存。
+
+- **引用计数**：考虑为窗口和表面添加引用计数机制，以确保资源不会被过早释放。
+
+### 9. 功能拓展
+
+- **窗口边缘吸附**：在窗口移动时实现边缘吸附功能，提升用户体验。
+
+- **多显示器支持**：增强多显示器支持，确保窗口可以正确地在不同显示器之间移动和排列。
+
+## 总结
+
+compositor.c 和 compositor.h 文件总体质量良好，没有明显的语法错误。主要的优化方向是完成未实现的 Wayland 窗口功能、改进窗口状态管理、完善错误处理机制以及提高代码的可维护性和性能。这些优化将使代码更加健壮，功能更加完整，用户体验更加流畅。
+        

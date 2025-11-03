@@ -1,3 +1,9 @@
+# ⚠️ 项目归档提醒 ⚠️
+
+此项目已归档。现在推荐使用 wlroots 的 headless 模式，并直接使用 Vulkan 作为后端，性能更佳且兼容性更好。
+
+---
+
 # libdrm_android - DRM/KMS Shim for Android NDK
 
 ## 概述
