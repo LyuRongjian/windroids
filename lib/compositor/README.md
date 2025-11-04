@@ -293,4 +293,25 @@ struct wlr_xwayland_surface* find_xwayland_surface_by_title(const char* window_t
 ## 总结
 
 compositor.c 和 compositor.h 文件总体质量良好，没有明显的语法错误。主要的优化方向是完成未实现的 Wayland 窗口功能、改进窗口状态管理、完善错误处理机制以及提高代码的可维护性和性能。这些优化将使代码更加健壮，功能更加完整，用户体验更加流畅。
-        
+
+## 优化建议
+### 1. 类型安全改进 ：
+   
+   - 在多个函数中创建临时 WindowInfo 结构体替代直接类型转换，提高了代码的类型安全性。
+   - 建议将全局指针 g_compositor_state 的使用减少，改为函数参数传递，提高代码的可测试性。
+### 2. 错误处理优化 ：
+   
+   - 为透明度设置添加了范围检查和日志警告，使用 clamp_float 函数确保透明度值在有效范围内。
+   - 建议为所有内存分配添加失败检查，并在函数返回前清理已分配的资源，防止内存泄漏。
+### 3. 代码结构优化 ：
+   
+   - WaylandWindow 和 WaylandWindowState 结构体定义存在重复，建议统一使用一种结构。
+   - 函数 compositor_maximize_window 、 compositor_restore_window 和 compositor_set_window_opacity 中有重复的窗口查找逻辑，建议提取为公共函数。
+### 4. 性能优化 ：
+   
+   - 在 `compositor_vulkan.c` 的 render_windows 函数中，建议按Z顺序排序窗口后再渲染，提高渲染效率。
+   - 建议实现窗口重绘区域的精确计算，而不是标记整个屏幕为脏区域，减少不必要的重绘。
+### 5. API一致性 ：
+   
+   - 函数 compositor_input_set_state 已正确使用 CompositorState* 类型，建议确保所有类似的函数也使用明确的类型而非 void* 。
+   - 建议为所有函数添加更详细的文档注释，特别是关于参数和返回值的说明。

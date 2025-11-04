@@ -2,6 +2,7 @@
 #define COMPOSITOR_WINDOW_H
 
 #include <stdint.h>
+#include <stdbool.h>
 
 // 窗口状态枚举
 enum {
@@ -61,16 +62,26 @@ typedef struct {
 typedef struct {
     struct wl_list link;
     struct wlr_xwayland_surface *surface;
-    WindowSavedState state;
+    char *title;
+    int x, y;
+    int width, height;
+    int state;
+    float opacity;
     int z_order;
+    WindowSavedState saved_state;
 } XwaylandWindowState;
 
 // Wayland窗口状态结构体
 typedef struct {
     struct wl_list link;
-    struct WaylandWindow *window;
-    WindowSavedState state;
+    struct wlr_surface *surface;
+    char *title;
+    int x, y;
+    int width, height;
+    int state;
+    float opacity;
     int z_order;
+    WindowSavedState saved_state;
 } WaylandWindowState;
 
 // 窗口管理相关函数声明

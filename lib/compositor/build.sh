@@ -35,18 +35,44 @@ mkdir -p "$OUTPUT_DIR/include"
 mkdir -p "$OUTPUT_DIR/lib"
 
 # 源文件和头文件
-SRC_FILE="$SCRIPT_DIR/compositor.c"
-HDR_FILE="$SCRIPT_DIR/compositor.h"
+SRC_FILES=("$SCRIPT_DIR/compositor.c" \
+           "$SCRIPT_DIR/compositor_vulkan.c" \
+           "$SCRIPT_DIR/compositor_config.c" \
+           "$SCRIPT_DIR/compositor_utils.c" \
+           "$SCRIPT_DIR/compositor_input.c" \
+           "$SCRIPT_DIR/compositor_window.c")
+
+HDR_FILES=("$SCRIPT_DIR/compositor.h" \
+           "$SCRIPT_DIR/compositor_vulkan.h" \
+           "$SCRIPT_DIR/compositor_config.h" \
+           "$SCRIPT_DIR/compositor_utils.h" \
+           "$SCRIPT_DIR/compositor_input.h" \
+           "$SCRIPT_DIR/compositor_window.h")
 
 # 编译标志
 CFLAGS="-I$SCRIPT_DIR -I$OUTPUT_DIR/include -I$NDK_PATH/sysroot/usr/include -I$NDK_PATH/sysroot/usr/include/$TARGET -fPIC -Wall -Wextra -O2 -std=c99"
-LDFLAGS="-L$OUTPUT_DIR/lib -lwlroots -lvulkan -landroid -ldl -llog"
+LDFLAGS="-L$OUTPUT_DIR/lib -lvulkan -landroid -ldl -llog"
+
+# 复制头文件到输出目录
+echo "📂 Copying header files to $OUTPUT_DIR/include"
+for hdr in "${HDR_FILES[@]}"; do
+    cp "$hdr" "$OUTPUT_DIR/include/"
+done
 
 # 编译静态库
 echo "🔧 Building static library libcompositor.a"
-$CC -c $CFLAGS $SRC_FILE -o "$SCRIPT_DIR/compositor.o"
-$AR rcs "$OUTPUT_DIR/lib/libcompositor.a" "$SCRIPT_DIR/compositor.o"
+OBJ_FILES=()
+for src in "${SRC_FILES[@]}"; do
+    obj="${src%.c}.o"
+    $CC -c $CFLAGS "$src" -o "$obj"
+    OBJ_FILES+=("$obj")
+done
+
+$AR rcs "$OUTPUT_DIR/lib/libcompositor.a" "${OBJ_FILES[@]}"
 $RANLIB "$OUTPUT_DIR/lib/libcompositor.a"
+
+echo "✅ Build completed successfully!"
+echo "📦 Library location: $OUTPUT_DIR/lib/libcompositor.a"
 
 # 编译共享库
 echo "🔧 Building shared library libcompositor.so"
