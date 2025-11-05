@@ -7,6 +7,58 @@
 // 窗口尺寸限制
 #define WINDOW_MIN_WIDTH 200
 #define WINDOW_MIN_HEIGHT 100
+#define MIN_WINDOW_WIDTH 100
+#define MIN_WINDOW_HEIGHT 80
+
+// 内存管理配置
+typedef struct {
+    size_t texture_cache_size;      // 纹理缓存大小（字节）
+    size_t render_queue_capacity;   // 渲染队列容量
+    bool enable_memory_tracking;    // 是否启用内存跟踪
+    float memory_pressure_threshold; // 内存压力阈值（0.0-1.0）
+    bool enable_texture_compression; // 是否启用纹理压缩
+    size_t texture_compression_threshold; // 纹理压缩阈值（字节）
+} MemoryConfig;
+
+// 性能优化配置
+typedef struct {
+    bool enable_dirty_rect;         // 是否启用脏区域优化
+    bool enable_scissor_test;       // 是否启用裁剪测试
+    bool enable_vsync;              // 是否启用垂直同步
+    bool enable_async_rendering;    // 是否启用异步渲染
+    int render_thread_count;        // 渲染线程数
+    bool use_render_batching;       // 是否使用渲染批次管理
+    bool use_instanced_rendering;   // 是否使用实例化渲染
+    bool use_adaptive_sync;         // 是否使用自适应同步
+    int max_render_batches;         // 最大渲染批次数
+} PerformanceConfig;
+
+// 多窗口管理配置
+typedef struct {
+    int default_workspace_count;    // 默认工作区数量
+    bool auto_tile_windows;         // 是否自动平铺窗口
+    int tile_spacing;               // 平铺窗口间距（像素）
+    int cascade_offset_x;           // 级联排列X轴偏移（像素）
+    int cascade_offset_y;           // 级联排列Y轴偏移（像素）
+    int window_min_width;           // 窗口最小宽度
+    int window_min_height;          // 窗口最小高度
+} WindowManagerConfig;
+
+// 窗口管理配置结构
+typedef struct {
+    int32_t default_window_width;  // 默认窗口宽度
+    int32_t default_window_height; // 默认窗口高度
+    bool enable_window_decoration; // 是否启用窗口装饰（边框、标题栏等）
+    int32_t max_windows;           // 最大窗口数量
+    bool enable_window_cycling;    // 是否启用窗口切换快捷键
+    int32_t window_border_width;   // 窗口边框宽度
+    int32_t window_titlebar_height;// 窗口标题栏高度
+    bool enable_window_shadows;    // 是否启用窗口阴影
+    float window_shadow_opacity;   // 窗口阴影透明度
+    bool enable_hover_effects;     // 是否启用鼠标悬停效果
+    bool enable_window_rotation;   // 是否启用窗口旋转
+    bool wraparound_workspaces;    // 是否启用工作区环绕切换
+} WindowManagerConfig;
 
 // 配置参数结构
 typedef struct {
@@ -29,15 +81,7 @@ typedef struct {
     bool enable_scissor_test;      // 是否启用剪裁测试
     
     // 窗口管理
-    int32_t default_window_width;  // 默认窗口宽度
-    int32_t default_window_height; // 默认窗口高度
-    bool enable_window_decoration; // 是否启用窗口装饰（边框、标题栏等）
-    int32_t max_windows;           // 最大窗口数量
-    bool enable_window_cycling;    // 是否启用窗口切换快捷键
-    int32_t window_border_width;   // 窗口边框宽度
-    int32_t window_titlebar_height;// 窗口标题栏高度
-    bool enable_window_shadows;    // 是否启用窗口阴影
-    float window_shadow_opacity;   // 窗口阴影透明度
+    WindowManagerConfig window_manager; // 窗口管理配置
     
     // 内存管理
     size_t texture_cache_size_mb;  // 纹理缓存大小（MB）
@@ -53,7 +97,18 @@ typedef struct {
     bool enable_gestures;          // 是否启用手势
     bool enable_gamepad;           // 是否启用游戏手柄
     bool enable_pen;               // 是否启用触控笔
+    bool enable_trackball;         // 是否启用轨迹球
+    bool enable_touchpad;          // 是否启用触控板
     int32_t max_touch_points;      // 最大触摸点数量
+    float pen_pressure_sensitivity; // 触控笔压力灵敏度 (0.0-1.0)
+    float joystick_sensitivity;    // 摇杆灵敏度
+    bool joystick_mouse_emulation; // 是否启用摇杆鼠标模拟
+    bool enable_pen_pressure;      // 是否启用触控笔压力感应
+    bool enable_gesture_window_manipulation; // 是否启用手势窗口操作
+    bool enable_edge_snap;         // 是否启用窗口边缘吸附
+    int32_t edge_snap_threshold;   // 边缘吸附阈值（像素）
+    bool enable_workspace_edge_switch; // 是否启用边缘工作区切换
+    int32_t workspace_switch_delay; // 工作区切换延迟（毫秒）
     
     // 性能优化
     bool enable_multithreading;    // 是否启用多线程

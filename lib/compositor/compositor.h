@@ -34,6 +34,31 @@ typedef struct {
     bool is_dirty;             // 脏标记
     DirtyRect* dirty_regions;  // 脏区域列表
     int32_t dirty_region_count;// 脏区域数量
+    
+    // 多窗口管理增强
+    int32_t workspace_id;      // 所属工作区ID
+    int32_t group_id;          // 所属窗口组ID
+    bool is_fullscreen;        // 是否全屏
+    bool is_maximized;         // 是否最大化
+    bool is_minimized;         // 是否最小化
+    bool is_shaded;            // 是否最小化到标题栏
+    bool is_sticky;            // 是否在所有工作区显示
+    
+    // 窗口装饰和特效
+    bool has_shadow;           // 是否有阴影
+    bool has_border;           // 是否有边框
+    float shadow_opacity;      // 阴影透明度
+    int32_t shadow_size;       // 阴影大小
+    
+    // 动画状态
+    bool is_animating;         // 是否正在动画中
+    float animation_progress;  // 动画进度
+    int animation_type;        // 动画类型
+    
+    // 保存的窗口状态（用于恢复）
+    int32_t saved_x, saved_y;
+    int32_t saved_width, saved_height;
+    WindowState saved_state;
 } XwaylandWindowState;
 
 // Wayland窗口
@@ -51,6 +76,31 @@ typedef struct {
     bool is_dirty;             // 脏标记
     DirtyRect* dirty_regions;  // 脏区域列表
     int32_t dirty_region_count;// 脏区域数量
+    
+    // 多窗口管理增强
+    int32_t workspace_id;      // 所属工作区ID
+    int32_t group_id;          // 所属窗口组ID
+    bool is_fullscreen;        // 是否全屏
+    bool is_maximized;         // 是否最大化
+    bool is_minimized;         // 是否最小化
+    bool is_shaded;            // 是否最小化到标题栏
+    bool is_sticky;            // 是否在所有工作区显示
+    
+    // 窗口装饰和特效
+    bool has_shadow;           // 是否有阴影
+    bool has_border;           // 是否有边框
+    float shadow_opacity;      // 阴影透明度
+    int32_t shadow_size;       // 阴影大小
+    
+    // 动画状态
+    bool is_animating;         // 是否正在动画中
+    float animation_progress;  // 动画进度
+    int animation_type;        // 动画类型
+    
+    // 保存的窗口状态（用于恢复）
+    int32_t saved_x, saved_y;
+    int32_t saved_width, saved_height;
+    WindowState saved_state;
 } WaylandWindow;
 
 // Xwayland窗口管理状态
@@ -69,6 +119,33 @@ typedef struct {
     int32_t capacity;          // 实际分配的容量（支持动态扩容）
 } WaylandState;
 
+// 工作区/虚拟桌面
+typedef struct {
+    char* name;
+    bool is_active;
+    int32_t window_count;
+    void** windows;           // 窗口指针数组
+    bool* is_wayland;         // 对应的窗口类型
+    WindowGroup* window_groups; // 窗口组数组
+    int32_t group_count;      // 窗口组数量
+} Workspace;
+
+// 窗口组
+typedef struct {
+    char* name;
+    int32_t window_count;
+    void** windows;           // 窗口指针数组
+    bool* is_wayland;         // 对应的窗口类型
+} WindowGroup;
+
+// 窗口平铺模式
+enum {
+    TILE_MODE_NONE = 0,       // 无平铺
+    TILE_MODE_HORIZONTAL = 1, // 水平平铺
+    TILE_MODE_VERTICAL = 2,   // 垂直平铺
+    TILE_MODE_GRID = 3        // 网格平铺
+};
+
 // 合成器状态
 typedef struct CompositorState {
     // 窗口和显示
@@ -86,6 +163,19 @@ typedef struct CompositorState {
     void* active_window;
     bool active_window_is_wayland;
     int32_t next_z_order;      // 下一个窗口的Z轴顺序
+    
+    // 多窗口管理增强
+    Workspace* workspaces;
+    int32_t workspace_count;
+    int32_t active_workspace;
+    WindowGroup* window_groups;
+    int32_t window_group_count;
+    int32_t tile_mode;         // 窗口平铺模式
+    
+    // 窗口预览和快照
+    void** window_snapshots;
+    bool* snapshot_is_wayland;
+    int32_t snapshot_count;
     
     // 渲染和输入状态
     void* vulkan_state;
@@ -171,6 +261,20 @@ int compositor_get_window_z_order(const char* window_title);
 
 // 设置窗口Z顺序
 int compositor_set_window_z_order(const char* window_title, int z_order);
+
+// 多窗口管理增强函数
+int compositor_create_workspace(const char* name);
+int compositor_switch_workspace(int workspace_index);
+int compositor_move_window_to_workspace(const char* window_title, int workspace_index);
+int compositor_group_windows(const char** window_titles, int count, const char* group_name);
+int compositor_ungroup_windows(const char* group_name);
+int compositor_tile_windows(int tile_mode);
+int compositor_cascade_windows();
+int compositor_take_window_snapshot(const char* window_title);
+int compositor_show_window_previews();
+int compositor_close_all_windows();
+int compositor_minimize_all_windows();
+int compositor_restore_all_windows();
 
 #ifdef __cplusplus
 }

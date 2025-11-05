@@ -24,15 +24,20 @@ static CompositorConfig g_default_config = {
     .enable_scissor_test = true,
     
     // 窗口管理
-    .default_window_width = 800,
-    .default_window_height = 600,
-    .enable_window_decoration = true,
-    .max_windows = 20,
-    .enable_window_cycling = true,
-    .window_border_width = 2,
-    .window_titlebar_height = 30,
-    .enable_window_shadows = true,
-    .window_shadow_opacity = 0.5f,
+    .window_manager = {
+        .default_window_width = 800,
+        .default_window_height = 600,
+        .enable_window_decoration = true,
+        .max_windows = 20,
+        .enable_window_cycling = true,
+        .window_border_width = 2,
+        .window_titlebar_height = 30,
+        .enable_window_shadows = true,
+        .window_shadow_opacity = 0.5f,
+        .enable_hover_effects = true,
+        .enable_window_rotation = true,
+        .wraparound_workspaces = true
+    },
     
     // 内存管理
     .texture_cache_size_mb = 256,
@@ -48,7 +53,18 @@ static CompositorConfig g_default_config = {
     .enable_gestures = true,
     .enable_gamepad = false,
     .enable_pen = false,
+    .enable_trackball = false,
+    .enable_touchpad = true,
     .max_touch_points = 10,
+    .pen_pressure_sensitivity = 0.5f,
+    .joystick_sensitivity = 1.0f,
+    .joystick_mouse_emulation = false,
+    .enable_pen_pressure = true,
+    .enable_gesture_window_manipulation = true,
+    .enable_edge_snap = true,
+    .edge_snap_threshold = 10,
+    .enable_workspace_edge_switch = true,
+    .workspace_switch_delay = 500,
     
     // 性能优化
     .enable_multithreading = true,
@@ -88,6 +104,28 @@ CompositorConfig* compositor_get_default_config(void) {
     if (g_default_config.xwayland_path) {
         config->xwayland_path = strdup(g_default_config.xwayland_path);
     }
+    
+    // 启用内存跟踪
+    config->enable_memory_tracking = true;
+    
+    // 默认启用触摸和手势
+    config->enable_touch = true;
+    config->enable_gestures = true;
+    config->enable_touchpad = true;
+    config->enable_gesture_window_manipulation = true;
+    config->enable_edge_snap = true;
+    
+    // 增加渲染线程数
+    config->render_thread_count = 4;
+    
+    // 默认启用异步纹理上传
+    config->enable_async_texture_upload = true;
+    
+    // 启用批处理渲染
+    config->enable_batch_rendering = true;
+    
+    // 启用纹理压缩
+    config->enable_memory_compression = true;
     
     return config;
 }
@@ -132,15 +170,18 @@ CompositorConfig* compositor_merge_config(CompositorConfig* user_config) {
         merged->enable_scissor_test = user_config->enable_scissor_test;
         
         // 合并窗口管理
-        merged->default_window_width = user_config->default_window_width;
-        merged->default_window_height = user_config->default_window_height;
-        merged->enable_window_decoration = user_config->enable_window_decoration;
-        merged->max_windows = user_config->max_windows;
-        merged->enable_window_cycling = user_config->enable_window_cycling;
-        merged->window_border_width = user_config->window_border_width;
-        merged->window_titlebar_height = user_config->window_titlebar_height;
-        merged->enable_window_shadows = user_config->enable_window_shadows;
-        merged->window_shadow_opacity = user_config->window_shadow_opacity;
+        merged->window_manager.default_window_width = user_config->window_manager.default_window_width;
+        merged->window_manager.default_window_height = user_config->window_manager.default_window_height;
+        merged->window_manager.enable_window_decoration = user_config->window_manager.enable_window_decoration;
+        merged->window_manager.max_windows = user_config->window_manager.max_windows;
+        merged->window_manager.enable_window_cycling = user_config->window_manager.enable_window_cycling;
+        merged->window_manager.window_border_width = user_config->window_manager.window_border_width;
+        merged->window_manager.window_titlebar_height = user_config->window_manager.window_titlebar_height;
+        merged->window_manager.enable_window_shadows = user_config->window_manager.enable_window_shadows;
+        merged->window_manager.window_shadow_opacity = user_config->window_manager.window_shadow_opacity;
+        merged->window_manager.enable_hover_effects = user_config->window_manager.enable_hover_effects;
+        merged->window_manager.enable_window_rotation = user_config->window_manager.enable_window_rotation;
+        merged->window_manager.wraparound_workspaces = user_config->window_manager.wraparound_workspaces;
         
         // 合并内存管理
         merged->texture_cache_size_mb = user_config->texture_cache_size_mb;
@@ -156,7 +197,18 @@ CompositorConfig* compositor_merge_config(CompositorConfig* user_config) {
         merged->enable_gestures = user_config->enable_gestures;
         merged->enable_gamepad = user_config->enable_gamepad;
         merged->enable_pen = user_config->enable_pen;
+        merged->enable_trackball = user_config->enable_trackball;
+        merged->enable_touchpad = user_config->enable_touchpad;
         merged->max_touch_points = user_config->max_touch_points;
+        merged->pen_pressure_sensitivity = user_config->pen_pressure_sensitivity;
+        merged->joystick_sensitivity = user_config->joystick_sensitivity;
+        merged->joystick_mouse_emulation = user_config->joystick_mouse_emulation;
+        merged->enable_pen_pressure = user_config->enable_pen_pressure;
+        merged->enable_gesture_window_manipulation = user_config->enable_gesture_window_manipulation;
+        merged->enable_edge_snap = user_config->enable_edge_snap;
+        merged->edge_snap_threshold = user_config->edge_snap_threshold;
+        merged->enable_workspace_edge_switch = user_config->enable_workspace_edge_switch;
+        merged->workspace_switch_delay = user_config->workspace_switch_delay;
         
         // 合并性能优化
         merged->enable_multithreading = user_config->enable_multithreading;
@@ -192,13 +244,13 @@ static void validate_config(CompositorConfig* config) {
     if (!config) return;
     
     // 验证窗口大小
-    if (config->default_window_width < WINDOW_MIN_WIDTH) {
-        config->default_window_width = WINDOW_MIN_WIDTH;
+    if (config->window_manager.default_window_width < WINDOW_MIN_WIDTH) {
+        config->window_manager.default_window_width = WINDOW_MIN_WIDTH;
         log_message(COMPOSITOR_LOG_WARN, "Default window width too small, using minimum: %d", WINDOW_MIN_WIDTH);
     }
     
-    if (config->default_window_height < WINDOW_MIN_HEIGHT) {
-        config->default_window_height = WINDOW_MIN_HEIGHT;
+    if (config->window_manager.default_window_height < WINDOW_MIN_HEIGHT) {
+        config->window_manager.default_window_height = WINDOW_MIN_HEIGHT;
         log_message(COMPOSITOR_LOG_WARN, "Default window height too small, using minimum: %d", WINDOW_MIN_HEIGHT);
     }
     
@@ -211,8 +263,8 @@ static void validate_config(CompositorConfig* config) {
     if (config->initial_scale > 4.0f) config->initial_scale = 4.0f;
     
     // 验证最大窗口数量
-    if (config->max_windows < 1) config->max_windows = 1;
-    if (config->max_windows > 100) config->max_windows = 100;
+    if (config->window_manager.max_windows < 1) config->window_manager.max_windows = 1;
+    if (config->window_manager.max_windows > 100) config->window_manager.max_windows = 100;
     
     // 验证交换链图像数量
     if (config->max_swapchain_images < 2) config->max_swapchain_images = 2;
@@ -234,14 +286,14 @@ static void validate_config(CompositorConfig* config) {
     if (config->max_dirty_rects > 1000) config->max_dirty_rects = 1000;
     
     // 验证窗口边框和标题栏尺寸
-    if (config->window_border_width < 0) config->window_border_width = 0;
-    if (config->window_border_width > 20) config->window_border_width = 20;
-    if (config->window_titlebar_height < 0) config->window_titlebar_height = 0;
-    if (config->window_titlebar_height > 100) config->window_titlebar_height = 100;
+    if (config->window_manager.window_border_width < 0) config->window_manager.window_border_width = 0;
+    if (config->window_manager.window_border_width > 20) config->window_manager.window_border_width = 20;
+    if (config->window_manager.window_titlebar_height < 0) config->window_manager.window_titlebar_height = 0;
+    if (config->window_manager.window_titlebar_height > 100) config->window_manager.window_titlebar_height = 100;
     
     // 验证阴影透明度
-    if (config->window_shadow_opacity < 0.0f) config->window_shadow_opacity = 0.0f;
-    if (config->window_shadow_opacity > 1.0f) config->window_shadow_opacity = 1.0f;
+    if (config->window_manager.window_shadow_opacity < 0.0f) config->window_manager.window_shadow_opacity = 0.0f;
+    if (config->window_manager.window_shadow_opacity > 1.0f) config->window_manager.window_shadow_opacity = 1.0f;
     
     // 验证内存管理配置
     if (config->texture_cache_size_mb < 16) config->texture_cache_size_mb = 16;
@@ -254,6 +306,20 @@ static void validate_config(CompositorConfig* config) {
     // 验证触摸点数量
     if (config->max_touch_points < 1) config->max_touch_points = 1;
     if (config->max_touch_points > 32) config->max_touch_points = 32;
+    
+    // 验证输入设备灵敏度
+    if (config->pen_pressure_sensitivity < 0.0f) config->pen_pressure_sensitivity = 0.0f;
+    if (config->pen_pressure_sensitivity > 1.0f) config->pen_pressure_sensitivity = 1.0f;
+    if (config->joystick_sensitivity < 0.1f) config->joystick_sensitivity = 0.1f;
+    if (config->joystick_sensitivity > 10.0f) config->joystick_sensitivity = 10.0f;
+    
+    // 验证边缘吸附阈值
+    if (config->edge_snap_threshold < 0) config->edge_snap_threshold = 0;
+    if (config->edge_snap_threshold > 50) config->edge_snap_threshold = 50;
+    
+    // 验证工作区切换延迟
+    if (config->workspace_switch_delay < 100) config->workspace_switch_delay = 100;
+    if (config->workspace_switch_delay > 2000) config->workspace_switch_delay = 2000;
     
     // 验证线程配置
     if (config->render_thread_count < 1) config->render_thread_count = 1;

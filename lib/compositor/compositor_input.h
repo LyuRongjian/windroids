@@ -66,6 +66,13 @@ typedef struct {
     int32_t axis_count;
     int32_t button_count;
     int32_t key_count;
+    // 游戏控制器按钮状态
+    bool gamepad_buttons[32];  // 游戏控制器按钮状态
+    // 设备能力标志
+    bool has_pressure_sensor;
+    bool has_tilt_sensor;
+    bool has_rotation_sensor;
+    bool has_accelerometer;
 } CompositorInputDevice;
 
 // 触摸点信息
@@ -77,7 +84,24 @@ typedef struct {
     float tilt_x, tilt_y;
     uint64_t timestamp;
     int32_t state;
+    float orientation; // 触摸方向
 } TouchPoint;
+
+// 手势信息结构体（扩展）
+typedef struct {
+    int32_t type;
+    int32_t touch_count;
+    float scale;     // 缩放因子
+    float rotation;  // 旋转角度
+    float dx;     // X方向移动距离
+    float dy;     // Y方向移动距离
+    float velocity_x; // 速度X分量
+    float velocity_y; // 速度Y分量
+    float acceleration_x; // 加速度X分量
+    float acceleration_y; // 加速度Y分量
+    int64_t duration;    // 手势持续时间
+    int click_count;     // 点击次数（1=单击，2=双击，3=三击）
+} CompositorGestureInfo;
 
 // 手势事件数据
 typedef struct {
@@ -124,7 +148,29 @@ typedef struct {
     float scroll_x, scroll_y;
     float scroll_distance_x, scroll_distance_y;
     float scroll_delta_z;
+    
+    // 扩展数据
+    float pen_rotation;    // 触控笔旋转角度
+    float joystick_axis_z; // 摇杆Z轴（如果有）
+    float joystick_axis_rz; // 摇杆旋转Z轴（如果有）
+    int gamepad_button_count; // 游戏手柄按钮数量
 } CompositorInputEvent;
+
+// 输入配置结构体
+typedef struct {
+    bool enable_gestures;            // 启用手势识别
+    bool enable_touch_emulation;     // 启用触摸模拟
+    bool joystick_mouse_emulation;   // 启用摇杆鼠标模拟
+    float joystick_sensitivity;      // 摇杆灵敏度
+    float joystick_deadzone;         // 摇杆死区
+    int joystick_max_speed;          // 摇杆最大速度
+    bool enable_pen_pressure;        // 启用触控笔压力感应
+    bool enable_pen_tilt;            // 启用触控笔倾斜支持
+    float pen_pressure_sensitivity;  // 触控笔压力灵敏度
+    bool enable_window_gestures;     // 启用窗口手势操作
+    int32_t double_tap_timeout;      // 双击超时时间（毫秒）
+    int32_t long_press_timeout;      // 长按超时时间（毫秒）
+} CompositorInputConfig;
 
 // 输入状态结构体
 typedef struct {
@@ -159,6 +205,18 @@ typedef struct {
     // 统计信息
     int64_t event_count;
     int64_t last_event_time;
+    
+    // 触控笔状态
+    bool pen_is_pressed;        // 触控笔是否按下
+    float pen_last_x;           // 触控笔最后X坐标
+    float pen_last_y;           // 触控笔最后Y坐标
+    float pen_last_pressure;    // 触控笔最后压力值
+    int pen_last_tilt_x;        // 触控笔最后X倾斜
+    int pen_last_tilt_y;        // 触控笔最后Y倾斜
+    int64_t pen_pressed_time;   // 触控笔按下时间
+    
+    // 输入配置
+    CompositorInputConfig config; // 输入配置
 } CompositorInputState;
 
 // 注入输入事件（基础接口）
@@ -209,6 +267,10 @@ bool compositor_input_is_gesture_enabled(int gesture_type);
 void compositor_input_set_gesture_threshold(int gesture_type, float threshold);
 float compositor_input_get_gesture_threshold(int gesture_type);
 
+// 高级手势配置
+void compositor_input_set_gesture_config(int32_t double_tap_timeout, int32_t long_press_timeout, 
+                                        float tap_threshold, float swipe_threshold);
+
 // 触摸相关查询函数
 size_t compositor_input_get_active_touch_points(TouchPoint** points);
 
@@ -218,9 +280,22 @@ int compositor_input_simulate_mouse_button(int button, int state);
 int compositor_input_simulate_mouse_motion(float x, float y);
 int compositor_input_simulate_touch(int touch_id, int state, float x, float y, float pressure);
 
+// 游戏控制器配置
+void compositor_input_set_gamepad_config(bool enable_mouse_emulation, float sensitivity, 
+                                        float deadzone, int max_speed);
+
+// 触控笔配置
+void compositor_input_set_pen_config(bool enable_pressure, bool enable_tilt, float pressure_sensitivity);
+
 // 设备查询函数
 size_t compositor_input_get_device_count();
 CompositorInputDevice** compositor_input_get_all_devices();
 bool compositor_input_device_has_capability(int32_t device_id, int capability);
+
+// 设备能力检测
+bool compositor_input_is_device_type_supported(int32_t device_type);
+bool compositor_input_has_pressure_support(void);
+bool compositor_input_has_tilt_support(void);
+bool compositor_input_has_rotation_support(void);
 
 #endif // COMPOSITOR_INPUT_H

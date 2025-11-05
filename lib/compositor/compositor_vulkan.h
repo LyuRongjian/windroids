@@ -46,7 +46,39 @@ typedef struct {
     bool enable_depth_test;       // 启用深度测试
     bool enable_alpha_blending;   // 启用Alpha混合
     bool enable_scissor_test;     // 启用剪裁测试
+    bool use_render_batching;     // 是否使用渲染批次管理
+    bool use_instanced_rendering; // 是否使用实例化渲染
+    bool use_adaptive_sync;       // 是否使用自适应同步
+    float max_anisotropy;         // 最大各向异性过滤
 } VulkanRenderOptimization;
+
+// 渲染实例
+typedef struct {
+    float x, y;            // 位置
+    float width, height;   // 尺寸
+    float z;               // Z顺序
+    float opacity;         // 透明度
+    float u0, v0, u1, v1;  // 纹理坐标
+    uint32_t texture_id;   // 纹理ID
+    uint32_t color;        // 颜色（ARGB）
+} RenderInstance;
+
+// 渲染命令类型
+typedef enum {
+    RENDER_COMMAND_WINDOW,            // 渲染窗口
+    RENDER_COMMAND_XWAYLAND_WINDOW,   // 渲染Xwayland窗口
+    RENDER_COMMAND_TEXTURE,           // 渲染纹理
+    RENDER_COMMAND_RECT,              // 渲染矩形
+    RENDER_COMMAND_CLEAR,             // 清除屏幕
+    RENDER_COMMAND_FLUSH              // 刷新渲染
+} RenderCommandType;
+
+// 渲染命令
+typedef struct {
+    RenderCommandType type;    // 命令类型
+    void* data;               // 命令数据
+    uint64_t timestamp;       // 时间戳
+} RenderCommand;
 
 // 性能监控数据
 typedef struct {
@@ -203,6 +235,27 @@ void cleanup_swapchain_resources(VulkanState* vulkan);
 void cleanup_texture_cache(VulkanState* vulkan);
 void cleanup_vulkan_resources(VulkanState* vulkan);
 void cleanup_vulkan(void);
+
+// 初始化渲染批次管理
+int init_render_batches(VulkanState* vulkan);
+
+// 初始化渲染队列
+int init_render_queue(VulkanState* vulkan);
+
+// 添加渲染命令到队列
+int add_render_command(VulkanState* vulkan, RenderCommandType type, void* data);
+
+// 优化渲染批次
+int optimize_render_batches(VulkanState* vulkan);
+
+// 执行渲染队列
+int execute_render_queue(VulkanState* vulkan, VkCommandBuffer command_buffer);
+
+// 更新性能统计信息
+void update_vulkan_performance_stats(VulkanState* vulkan);
+
+// 使用硬件加速渲染窗口
+int render_windows_with_hardware_acceleration(CompositorState* state);
 
 // 内部函数
 void wait_idle(void);
