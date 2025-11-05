@@ -1,4 +1,7 @@
 #include "compositor_vulkan.h"
+#include "compositor_vulkan_perf.h"
+#include "compositor_vulkan_optimization.h"
+#include "compositor_vulkan_adapt.h"
 #include "compositor_utils.h"
 #include "compositor.h"
 #include <string.h>
@@ -25,18 +28,17 @@ int init_vulkan(CompositorState* state) {
     // 重置Vulkan相关状态
     memset(&state->vulkan, 0, sizeof(VulkanState));
     
-    // 初始化性能监控
-    memset(&state->vulkan.perf_monitor, 0, sizeof(RenderPerfMonitor));
-    state->vulkan.perf_monitor.start_time = get_current_time_ms();
+    // 初始化新的性能监控系统
+    if (init_vulkan_performance_monitoring(&state->vulkan) != COMPOSITOR_OK) {
+        log_message(COMPOSITOR_LOG_ERROR, "Failed to initialize Vulkan performance monitoring");
+        return COMPOSITOR_ERROR_VULKAN;
+    }
     
-    // 初始化渲染优化配置
-    state->vulkan.render_optimization.enabled = state->config.use_dirty_rect_optimization;
-    state->vulkan.render_optimization.use_clipping = state->config.enable_clip_test;
-    state->vulkan.render_optimization.use_render_batching = true;      // 启用渲染批次管理
-    state->vulkan.render_optimization.use_render_queue = true;        // 启用渲染队列
-    state->vulkan.render_optimization.use_instanced_rendering = true; // 启用实例化渲染
-    state->vulkan.render_optimization.use_adaptive_sync = true;       // 启用自适应同步
-    state->vulkan.render_optimization.max_anisotropy = 16.0f;         // 设置最大各向异性过滤
+    // 初始化新的渲染优化系统
+    if (!init_render_optimization(&state->vulkan.optimization, &state->config)) {
+        log_message(COMPOSITOR_LOG_ERROR, "Failed to initialize render optimization");
+        return COMPOSITOR_ERROR_VULKAN;
+    }
     
     // 初始化多窗口管理
     state->vulkan.multi_window.active_batch_count = 0;
@@ -1510,7 +1512,7 @@ int add_render_command(VulkanState* vulkan, RenderCommandType type, void* data) 
 
 // 优化渲染批次
 int optimize_render_batches(VulkanState* vulkan) {
-    if (!vulkan || !vulkan->render_optimization.use_render_batching) {
+    if (!vulkan || !is_render_batching_enabled(&vulkan->optimization)) {
         return COMPOSITOR_OK;
     }
     
@@ -1941,8 +1943,8 @@ int render_windows_with_hardware_acceleration(CompositorState* state) {
         adapt_rendering_quality(vulkan);
     }
     
-    // 更新性能统计
-    update_vulkan_performance_stats(vulkan);
+    // 使用新的性能监控系统更新统计信息
+    update_vulkan_performance_stats(&vulkan->perf_stats);
     
     // 清除脏区域标记
     if (state->config.use_dirty_rect_optimization) {

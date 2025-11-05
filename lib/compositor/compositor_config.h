@@ -116,6 +116,7 @@ typedef struct {
     bool enable_swap_interval_adaptation; // 是否启用交换间隔自适应
     bool enable_async_texture_upload; // 是否启用异步纹理上传
     bool enable_batch_rendering;   // 是否启用批量渲染
+    bool use_adaptive_rendering;   // 是否启用自适应渲染
     
     // 调试选项
     int32_t log_level;             // 日志级别 (0=ERROR, 1=WARN, 2=INFO, 3=DEBUG)

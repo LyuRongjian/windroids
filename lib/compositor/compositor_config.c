@@ -72,6 +72,7 @@ static CompositorConfig g_default_config = {
     .enable_swap_interval_adaptation = true,
     .enable_async_texture_upload = true,
     .enable_batch_rendering = true,
+    .use_adaptive_rendering = true,
     
     // 调试选项
     .log_level = COMPOSITOR_LOG_INFO,
@@ -216,6 +217,7 @@ CompositorConfig* compositor_merge_config(CompositorConfig* user_config) {
         merged->enable_swap_interval_adaptation = user_config->enable_swap_interval_adaptation;
         merged->enable_async_texture_upload = user_config->enable_async_texture_upload;
         merged->enable_batch_rendering = user_config->enable_batch_rendering;
+        merged->use_adaptive_rendering = user_config->use_adaptive_rendering;
         
         // 合并调试选项
         merged->log_level = user_config->log_level;
@@ -325,6 +327,8 @@ static void validate_config(CompositorConfig* config) {
     if (config->render_thread_count < 1) config->render_thread_count = 1;
     if (config->render_thread_count > 16) config->render_thread_count = 16;
     
+    // 自适应渲染总是启用的，不需要验证
+    
     // 验证屏幕保护超时
     if (config->screensaver_timeout < 60) config->screensaver_timeout = 60;
     if (config->screensaver_timeout > 3600) config->screensaver_timeout = 3600;
@@ -408,6 +412,7 @@ void compositor_print_config(const CompositorConfig* config) {
     log_message(COMPOSITOR_LOG_INFO, "Swap Interval Adaptation: %s", config->enable_swap_interval_adaptation ? "enabled" : "disabled");
     log_message(COMPOSITOR_LOG_INFO, "Async Texture Upload: %s", config->enable_async_texture_upload ? "enabled" : "disabled");
     log_message(COMPOSITOR_LOG_INFO, "Batch Rendering: %s", config->enable_batch_rendering ? "enabled" : "disabled");
+    log_message(COMPOSITOR_LOG_INFO, "Adaptive Rendering: %s", config->use_adaptive_rendering ? "enabled" : "disabled");
     
     // 调试选项
     log_message(COMPOSITOR_LOG_INFO, "Log Level: %d", config->log_level);
