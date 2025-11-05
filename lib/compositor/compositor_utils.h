@@ -4,6 +4,8 @@
 #include <stddef.h>
 #include <stdarg.h>
 #include <stdbool.h>
+#include <time.h>
+#include <stdint.h>
 
 // 错误码定义
 enum {
@@ -41,6 +43,7 @@ enum {
     COMPOSITOR_LOG_INFO = 2,
     COMPOSITOR_LOG_DEBUG = 3
 };
+typedef int CompositorLogLevel;
 
 // 全局变量成功状态
 #define COMPOSITOR_SUCCESS COMPOSITOR_OK
@@ -64,12 +67,20 @@ const char* compositor_get_error_message(char* buffer, size_t size);
 void utils_set_log_level(int level);
 
 // 矩形结构体定义
-typedef struct {
-    int x, y, width, height;
+typedef struct CompositorRect {
+    int32_t x, y, width, height;
 } CompositorRect;
 
+// 颜色结构体
+typedef struct CompositorColor {
+    float r;
+    float g;
+    float b;
+    float a;
+} CompositorColor;
+
 // 性能统计结构体
-typedef struct {
+typedef struct CompositorPerfStat {
     float fps;
     float avg_frame_time;
     float min_frame_time;
@@ -78,14 +89,24 @@ typedef struct {
     float cpu_usage;
     int dirty_rect_count;
     int visible_windows;
-} PerformanceStats;
+    char name[64];  // 统计名称
+} CompositorPerfStat;
+typedef CompositorPerfStat PerformanceStats;
 
 // 内存跟踪结构体
-typedef struct {
-    size_t total_allocated;
-    size_t peak_allocated;
-    int allocation_count;
-} MemoryTracker;
+typedef struct CompositorMemoryStats {
+    uint64_t total_allocated;
+    uint64_t peak_allocated;
+    uint64_t allocation_count;
+    uint64_t free_count;
+    uint64_t failed_allocations;
+    uint64_t max_memory_limit;
+    bool track_leaks;
+    // 按类型统计
+    uint64_t texture_memory_bytes;
+    uint64_t buffer_memory_bytes;
+} CompositorMemoryStats;
+typedef CompositorMemoryStats MemoryTracker;
 
 // 性能相关函数
 void update_performance_stats(void);
@@ -109,10 +130,13 @@ bool rect_contains_point(int x, int y, int width, int height, int point_x, int p
 CompositorRect expand_rect(const CompositorRect* rect, int padding);
 
 // 内存管理工具
-void* safe_malloc(size_t size);
-void* safe_realloc(void* ptr, size_t size);
+void* safe_malloc(size_t size, const char* label);
+void* safe_realloc(void* ptr, size_t size, const char* label);
 char* safe_strdup(const char* str);
 void safe_free(void** ptr);
+
+// 内存检查函数
+bool check_memory_usage(void);
 
 // 内存跟踪函数
 void track_memory_allocation(size_t size);
@@ -136,6 +160,12 @@ char* format_string(const char* format, ...);
 
 // 时间工具函数
 unsigned long get_current_time_ms(void);
+uint64_t compositor_get_current_time_us(void);
+uint64_t compositor_get_current_time_ns(void);
+
+// 调试辅助
+void compositor_debug_dump_stack(void);
+const char* compositor_error_to_string(int error_code);
 
 // 资源清理函数
 void cleanup_performance_stats(void);

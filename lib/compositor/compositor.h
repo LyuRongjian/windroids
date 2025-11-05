@@ -4,6 +4,12 @@
 #include <android/native_window.h>
 #include <stdint.h>
 #include <stdbool.h>
+#include "compositor_render.h" // 包含渲染模块头文件
+#include "compositor_dirty.h" // 包含脏区域管理头文件
+
+// 前向声明
+struct CompositorConfig;
+typedef struct CompositorConfig CompositorConfig;
 
 // 窗口状态枚举
 typedef enum {
@@ -19,89 +25,18 @@ typedef struct {
     int32_t width, height;
 } DirtyRect;
 
-// Xwayland窗口状态
-typedef struct {
-    int32_t x, y;
-    int32_t width, height;
-    WindowState state;
-    bool focused;
-    const char* title;
-    uint32_t window_id;
-    void* surface;
-    float opacity;
-    int32_t z_order;           // Z轴顺序
-    void* render_data;         // 渲染相关数据
-    bool is_dirty;             // 脏标记
-    DirtyRect* dirty_regions;  // 脏区域列表
-    int32_t dirty_region_count;// 脏区域数量
-    
-    // 多窗口管理增强
-    int32_t workspace_id;      // 所属工作区ID
-    int32_t group_id;          // 所属窗口组ID
-    bool is_fullscreen;        // 是否全屏
-    bool is_maximized;         // 是否最大化
-    bool is_minimized;         // 是否最小化
-    bool is_shaded;            // 是否最小化到标题栏
-    bool is_sticky;            // 是否在所有工作区显示
-    
-    // 窗口装饰和特效
-    bool has_shadow;           // 是否有阴影
-    bool has_border;           // 是否有边框
-    float shadow_opacity;      // 阴影透明度
-    int32_t shadow_size;       // 阴影大小
-    
-    // 动画状态
-    bool is_animating;         // 是否正在动画中
-    float animation_progress;  // 动画进度
-    int animation_type;        // 动画类型
-    
-    // 保存的窗口状态（用于恢复）
-    int32_t saved_x, saved_y;
-    int32_t saved_width, saved_height;
-    WindowState saved_state;
-} XwaylandWindowState;
+// 前向声明
+struct WindowGroup;
+typedef struct WindowGroup WindowGroup;
 
-// Wayland窗口
-typedef struct {
-    int32_t x, y;
-    int32_t width, height;
-    WindowState state;
-    bool focused;
-    const char* title;
-    uint32_t window_id;
-    void* surface;
-    float opacity;
-    int32_t z_order;           // Z轴顺序
-    void* render_data;         // 渲染相关数据
-    bool is_dirty;             // 脏标记
-    DirtyRect* dirty_regions;  // 脏区域列表
-    int32_t dirty_region_count;// 脏区域数量
-    
-    // 多窗口管理增强
-    int32_t workspace_id;      // 所属工作区ID
-    int32_t group_id;          // 所属窗口组ID
-    bool is_fullscreen;        // 是否全屏
-    bool is_maximized;         // 是否最大化
-    bool is_minimized;         // 是否最小化
-    bool is_shaded;            // 是否最小化到标题栏
-    bool is_sticky;            // 是否在所有工作区显示
-    
-    // 窗口装饰和特效
-    bool has_shadow;           // 是否有阴影
-    bool has_border;           // 是否有边框
-    float shadow_opacity;      // 阴影透明度
-    int32_t shadow_size;       // 阴影大小
-    
-    // 动画状态
-    bool is_animating;         // 是否正在动画中
-    float animation_progress;  // 动画进度
-    int animation_type;        // 动画类型
-    
-    // 保存的窗口状态（用于恢复）
-    int32_t saved_x, saved_y;
-    int32_t saved_width, saved_height;
-    WindowState saved_state;
-} WaylandWindow;
+struct Workspace;
+typedef struct Workspace Workspace;
+
+struct XwaylandWindowState;
+typedef struct XwaylandWindowState XwaylandWindowState;
+
+struct WaylandWindow;
+typedef struct WaylandWindow WaylandWindow;
 
 // Xwayland窗口管理状态
 typedef struct {
@@ -118,25 +53,6 @@ typedef struct {
     int32_t max_windows;
     int32_t capacity;          // 实际分配的容量（支持动态扩容）
 } WaylandState;
-
-// 工作区/虚拟桌面
-typedef struct {
-    char* name;
-    bool is_active;
-    int32_t window_count;
-    void** windows;           // 窗口指针数组
-    bool* is_wayland;         // 对应的窗口类型
-    WindowGroup* window_groups; // 窗口组数组
-    int32_t group_count;      // 窗口组数量
-} Workspace;
-
-// 窗口组
-typedef struct {
-    char* name;
-    int32_t window_count;
-    void** windows;           // 窗口指针数组
-    bool* is_wayland;         // 对应的窗口类型
-} WindowGroup;
 
 // 窗口平铺模式
 enum {
@@ -200,6 +116,16 @@ typedef struct CompositorState {
     // 错误状态
     int last_error;
     char error_message[256];
+    
+    // 拖动状态
+    void* dragging_window;
+    bool is_dragging;
+    int32_t drag_offset_x;
+    int32_t drag_offset_y;
+    
+    // 手势状态
+    bool is_gesturing;
+    int last_gesture_type;
 } CompositorState;
 
 // 包含拆分后的头文件

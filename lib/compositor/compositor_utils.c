@@ -1,5 +1,13 @@
 #include "compositor_utils.h"
 #include "compositor.h"
+#include <time.h>
+
+// 全局状态引用
+static CompositorState* g_compositor_state_ref = NULL;
+static CompositorPerfStat g_performance_stats = {0};
+static int64_t g_render_start_time = 0;
+static size_t g_memory_usage_threshold = 0;
+#include "compositor.h"
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -482,8 +490,89 @@ CompositorRect expand_rect(const CompositorRect* rect, int padding) {
     return result;
 }
 
+static size_t g_memory_usage_threshold = 0;
+static CompositorState* g_compositor_state_ref = NULL;
+static bool g_initialized = false;
+
+// 设置compositor状态引用
+void compositor_utils_set_state(CompositorState* state) {
+    g_compositor_state_ref = state;
+    g_initialized = (state != NULL);
+}
+
+// 更新性能统计
+void update_performance_stats(void) {
+    if (!g_compositor_state_ref || !g_initialized) {
+        // 如果没有状态引用，使用原有的性能统计逻辑
+        clock_t current_time = clock();
+        if (g_last_frame_time > 0) {
+            float frame_time = (float)(current_time - g_last_frame_time) / CLOCKS_PER_SEC;
+            
+            // 保存帧时间
+            g_frame_times[g_frame_time_index] = frame_time;
+            g_frame_time_index = (g_frame_time_index + 1) % 60;
+            
+            // 计算统计数据
+            float total_time = 0.0f;
+            int valid_frames = 0;
+            float min_time = 1.0f;  // 初始值设为较大的值
+            float max_time = 0.0f;
+            
+            for (int i = 0; i < 60; i++) {
+                if (g_frame_times[i] > 0) {
+                    total_time += g_frame_times[i];
+                    valid_frames++;
+                    if (g_frame_times[i] < min_time) min_time = g_frame_times[i];
+                    if (g_frame_times[i] > max_time) max_time = g_frame_times[i];
+                }
+            }
+            
+            if (valid_frames > 0) {
+                g_performance_stats.avg_frame_time = total_time / valid_frames;
+                g_performance_stats.fps = 1.0f / g_performance_stats.avg_frame_time;
+                g_performance_stats.min_frame_time = min_time;
+                g_performance_stats.max_frame_time = max_time;
+            }
+            
+            // 记录性能警告
+            if (g_performance_stats.fps < 30.0f) {
+                log_message(COMPOSITOR_LOG_WARN, "Low FPS detected: %.1f", g_performance_stats.fps);
+            }
+        }
+        
+        g_last_frame_time = current_time;
+        return;
+    }
+    
+    int64_t current_time = get_current_time_ms();
+    if (g_compositor_state_ref->last_frame_time > 0) {
+        float delta_time = (current_time - g_compositor_state_ref->last_frame_time) / 1000.0f;
+        if (delta_time > 0) {
+            // 平滑FPS计算
+            g_compositor_state_ref->fps = 0.9f * g_compositor_state_ref->fps + 0.1f * (1.0f / delta_time);
+        }
+    }
+    g_compositor_state_ref->last_frame_time = current_time;
+    g_compositor_state_ref->frame_count++;
+    
+    // 性能监控和调试输出
+    if (g_compositor_state_ref->config.performance_monitoring && 
+        g_compositor_state_ref->frame_count % 60 == 0) {
+        log_message(COMPOSITOR_LOG_DEBUG, "FPS: %.1f, Avg frame time: %.2f ms", 
+                   g_compositor_state_ref->fps, g_compositor_state_ref->avg_frame_time);
+    }
+    
+    // 内存使用监控
+    if (g_compositor_state_ref->config.debug_mode && 
+        g_compositor_state_ref->frame_count % 1000 == 0) {
+        log_message(COMPOSITOR_LOG_DEBUG, "Memory usage: %zu bytes (peak: %zu bytes)", 
+                   g_compositor_state_ref->total_allocated, g_compositor_state_ref->peak_allocated);
+    }
+}
+
 // 内存跟踪函数
 void track_memory_allocation(size_t size) {
+    // 更新全局内存跟踪器
     g_memory_tracker.total_allocated += size;
     if (g_memory_tracker.total_allocated > g_memory_tracker.peak_allocated) {
         g_memory_tracker.peak_allocated = g_memory_tracker.total_allocated;
@@ -495,11 +584,41 @@ void track_memory_allocation(size_t size) {
         log_message(COMPOSITOR_LOG_WARN, "High memory usage detected: %.2f MB", 
                    (float)g_memory_tracker.total_allocated / (1024 * 1024));
     }
+    
+    // 如果有状态引用，也更新状态中的内存跟踪
+    if (g_compositor_state_ref && g_initialized && 
+        g_compositor_state_ref->config.enable_memory_tracking) {
+        g_compositor_state_ref->total_allocated += size;
+        if (g_compositor_state_ref->total_allocated > g_compositor_state_ref->peak_allocated) {
+            g_compositor_state_ref->peak_allocated = g_compositor_state_ref->total_allocated;
+        }
+        
+        // 检查内存使用限制
+        size_t max_memory_bytes = g_compositor_state_ref->config.max_memory_usage_mb * 1024 * 1024;
+        if (max_memory_bytes > 0 && g_compositor_state_ref->total_allocated > max_memory_bytes) {
+            log_message(COMPOSITOR_LOG_WARN, "Memory usage exceeded limit: %zu / %zu bytes", 
+                       g_compositor_state_ref->total_allocated, max_memory_bytes);
+        }
+    }
 }
 
 void track_memory_deallocation(size_t size) {
     if (g_memory_tracker.total_allocated >= size) {
         g_memory_tracker.total_allocated -= size;
+    }
+}
+
+// 内存释放跟踪辅助函数
+void track_memory_free(size_t size) {
+    // 更新全局内存跟踪器
+    track_memory_deallocation(size);
+    
+    // 如果有状态引用，也更新状态中的内存跟踪
+    if (g_compositor_state_ref && g_initialized && 
+        g_compositor_state_ref->config.enable_memory_tracking) {
+        if (g_compositor_state_ref->total_allocated >= size) {
+            g_compositor_state_ref->total_allocated -= size;
+        }
     }
 }
 

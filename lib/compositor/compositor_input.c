@@ -802,6 +802,185 @@ static void handle_gesture_end(void) {
     g_gesture_state.acceleration_y = 0.0f;
 }
 
+// 处理输入事件
+void process_input_events() {
+    if (!g_compositor_state) return;
+    
+    CompositorInputEvent event;
+    while (compositor_input_get_next_event(&event)) {
+        // 处理不同类型的输入事件
+        switch (event.type) {
+            case COMPOSITOR_INPUT_EVENT_MOUSE_MOTION:
+                process_mouse_motion_event(&event);
+                break;
+                
+            case COMPOSITOR_INPUT_EVENT_MOUSE_BUTTON:
+                process_mouse_button_event(&event);
+                break;
+                
+            case COMPOSITOR_INPUT_EVENT_TOUCH:
+                process_touch_event(&event);
+                break;
+                
+            case COMPOSITOR_INPUT_EVENT_GESTURE:
+                process_gesture_event(&event);
+                break;
+                
+            default:
+                if (g_compositor_state && g_compositor_state->config.debug_mode) {
+                    log_message(COMPOSITOR_LOG_DEBUG, "Unhandled input event type: %d", event.type);
+                }
+                break;
+        }
+    }
+}
+
+// 处理鼠标移动事件
+void process_mouse_motion_event(CompositorInputEvent* event) {
+    if (!g_compositor_state) return;
+    
+    // 如果正在拖动窗口，更新窗口位置
+    if (g_compositor_state->is_dragging && g_compositor_state->dragging_window) {
+        int new_x = event->mouse.x - g_compositor_state->drag_offset_x;
+        int new_y = event->mouse.y - g_compositor_state->drag_offset_y;
+        
+        // 限制窗口不超出屏幕边界（可配置是否启用）
+        if (g_compositor_state->config.restrict_window_bounds) {
+            if (new_x < 0) new_x = 0;
+            if (new_y < 0) new_y = 0;
+            if (new_x + g_compositor_state->dragging_window->width > g_compositor_state->width) {
+                new_x = g_compositor_state->width - g_compositor_state->dragging_window->width;
+            }
+            if (new_y + g_compositor_state->dragging_window->height > g_compositor_state->height) {
+                new_y = g_compositor_state->height - g_compositor_state->dragging_window->height;
+            }
+        }
+        
+        // 更新窗口位置
+        g_compositor_state->dragging_window->x = new_x;
+        g_compositor_state->dragging_window->y = new_y;
+        
+        // 标记窗口区域为脏
+        compositor_mark_dirty_rect(new_x, new_y, 
+                                 g_compositor_state->dragging_window->width,
+                                 g_compositor_state->dragging_window->height);
+        
+        // 触发重绘
+        g_compositor_state->needs_redraw = true;
+    }
+}
+
+// 处理鼠标按钮事件
+void process_mouse_button_event(CompositorInputEvent* event) {
+    if (!g_compositor_state) return;
+    
+    // 只有左键点击才处理
+    if (event->mouse_button.button != COMPOSITOR_MOUSE_BUTTON_LEFT) {
+        return;
+    }
+    
+    if (event->mouse_button.pressed) {
+        // 查找点击位置的窗口
+        bool is_wayland = false;
+        void* window = find_surface_at_position(event->mouse_button.x, 
+                                              event->mouse_button.y, &is_wayland);
+        
+        if (window) {
+            // 记录拖动信息
+            g_compositor_state->dragging_window = window;
+            g_compositor_state->is_dragging = true;
+            g_compositor_state->drag_offset_x = event->mouse_button.x - ((WaylandWindow*)window)->x;
+            g_compositor_state->drag_offset_y = event->mouse_button.y - ((WaylandWindow*)window)->y;
+            
+            // 更新活动窗口
+            g_compositor_state->active_window = window;
+            g_compositor_state->active_window_is_wayland = is_wayland;
+        } else {
+            // 点击桌面背景，取消拖动
+            g_compositor_state->is_dragging = false;
+            g_compositor_state->dragging_window = NULL;
+            g_compositor_state->active_window = NULL;
+        }
+    } else {
+        // 释放鼠标按钮，结束拖动
+        g_compositor_state->is_dragging = false;
+    }
+}
+
+// 处理触摸事件
+void process_touch_event(CompositorInputEvent* event) {
+    // 这里可以添加更多的触摸事件处理逻辑
+}
+
+// 处理手势事件
+void process_gesture_event(CompositorInputEvent* event) {
+    if (!g_compositor_state) return;
+    
+    // 处理不同类型的手势事件
+    if (event->gesture.type == COMPOSITOR_GESTURE_TAP) {
+        // 处理点击事件
+        int x = event->gesture.x;
+        int y = event->gesture.y;
+        
+        // 查找点击位置的窗口
+        bool is_wayland = false;
+        void* window = find_surface_at_position(x, y, &is_wayland);
+        
+        if (window) {
+            // 更新活动窗口
+            g_compositor_state->active_window = window;
+            g_compositor_state->active_window_is_wayland = is_wayland;
+            
+            // 如果是双击，最大化/还原窗口
+            if (event->gesture.tap_count == 2) {
+                const char* title = is_wayland ? 
+                    ((WaylandWindow*)window)->title : 
+                    ((XwaylandWindowState*)window)->title;
+                
+                if (is_wayland) {
+                    WaylandWindow* wayland_window = (WaylandWindow*)window;
+                    if (wayland_window->state == WINDOW_STATE_MAXIMIZED) {
+                        compositor_restore_window(title);
+                    } else {
+                        compositor_maximize_window(title);
+                    }
+                } else {
+                    XwaylandWindowState* xway_window = (XwaylandWindowState*)window;
+                    if (xway_window->state == WINDOW_STATE_MAXIMIZED) {
+                        compositor_restore_window(title);
+                    } else {
+                        compositor_maximize_window(title);
+                    }
+                }
+            }
+        } else {
+            // 点击桌面背景，取消活动窗口
+            g_compositor_state->active_window = NULL;
+        }
+    } else if (event->gesture.type == COMPOSITOR_GESTURE_SWIPE) {
+        // 处理滑动事件
+        // 水平滑动可以用于工作区切换
+        if (event->gesture.swipe_direction == COMPOSITOR_GESTURE_SWIPE_LEFT || 
+            event->gesture.swipe_direction == COMPOSITOR_GESTURE_SWIPE_RIGHT) {
+            int current_workspace = g_compositor_state->active_workspace_index;
+            int new_workspace = current_workspace + 
+                (event->gesture.swipe_direction == COMPOSITOR_GESTURE_SWIPE_LEFT ? 1 : -1);
+            
+            // 循环切换工作区
+            if (new_workspace < 0) {
+                new_workspace = g_compositor_state->workspace_count - 1;
+            } else if (new_workspace >= g_compositor_state->workspace_count) {
+                new_workspace = 0;
+            }
+            
+            compositor_switch_workspace(new_workspace);
+        }
+    } else if (event->gesture.type == COMPOSITOR_GESTURE_PINCH) {
+        // 处理捏合手势（可用于窗口管理操作）
+        // 这里可以根据捏合比例和方向实现窗口缩放等功能
+    }
+}
+
 // 处理输入事件（新接口）
 // 静态辅助函数：处理轨迹球输入
 static void handle_trackball_event(CompositorInputEvent* event) {

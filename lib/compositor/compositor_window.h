@@ -3,14 +3,15 @@
 
 #include <stdint.h>
 #include <stdbool.h>
+#include "compositor.h" // 包含基础定义
 
-// 窗口状态枚举
-enum {
-    WINDOW_STATE_NORMAL = 0,      // 普通状态
-    WINDOW_STATE_MINIMIZED = 1,   // 最小化状态
-    WINDOW_STATE_MAXIMIZED = 2,   // 最大化状态
-    WINDOW_STATE_FULLSCREEN = 3   // 全屏状态
-};
+// 窗口状态枚举（保持与compositor.h一致）
+#ifndef WINDOW_STATE_NORMAL
+#define WINDOW_STATE_NORMAL 0
+#define WINDOW_STATE_MINIMIZED 1
+#define WINDOW_STATE_MAXIMIZED 2
+#define WINDOW_STATE_FULLSCREEN 3
+#endif
 
 // 窗口常量定义
 #define WINDOW_TITLEBAR_HEIGHT 32    // 窗口标题栏高度
@@ -44,45 +45,117 @@ typedef struct {
     bool is_wayland;              // 是否为Wayland窗口
 } WindowInfo;
 
-// Wayland窗口结构体定义
+// 工作区/虚拟桌面
 typedef struct {
-    struct wl_list link;
-    struct wlr_surface *surface;
-    char *title;
-    int x, y;
-    int width, height;
-    bool mapped;
-    bool minimized;
-    bool maximized;
-    float opacity;
-    int z_order;
-} WaylandWindow;
+    char* name;
+    bool is_active;
+    int32_t window_count;
+    void** windows;               // 窗口指针数组
+    bool* is_wayland;             // 对应的窗口类型
+    WindowGroup* window_groups;   // 窗口组数组
+    int32_t group_count;          // 窗口组数量
+} Workspace;
 
-// Xwayland窗口状态结构体
+// 窗口组
 typedef struct {
-    struct wl_list link;
-    struct wlr_xwayland_surface *surface;
-    char *title;
-    int x, y;
-    int width, height;
-    int state;
+    char* name;
+    int32_t window_count;
+    void** windows;               // 窗口指针数组
+    bool* is_wayland;             // 对应的窗口类型
+} WindowGroup;
+
+// Xwayland窗口状态
+typedef struct XwaylandWindowState {
+    int32_t x, y;
+    int32_t width, height;
+    WindowState state;
+    bool focused;
+    const char* title;
+    uint32_t window_id;
+    void* surface;
     float opacity;
-    int z_order;
-    WindowSavedState saved_state;
+    int32_t z_order;           // Z轴顺序
+    void* render_data;         // 渲染相关数据
+    bool is_dirty;             // 脏标记
+    DirtyRect* dirty_regions;  // 脏区域列表
+    int32_t dirty_region_count;// 脏区域数量
+    
+    // 多窗口管理增强
+    int32_t workspace_id;      // 所属工作区ID
+    int32_t group_id;          // 所属窗口组ID
+    bool is_fullscreen;        // 是否全屏
+    bool is_maximized;         // 是否最大化
+    bool is_minimized;         // 是否最小化
+    bool is_shaded;            // 是否最小化到标题栏
+    bool is_sticky;            // 是否在所有工作区显示
+    
+    // 窗口装饰和特效
+    bool has_shadow;           // 是否有阴影
+    bool has_border;           // 是否有边框
+    float shadow_opacity;      // 阴影透明度
+    int32_t shadow_size;       // 阴影大小
+    
+    // 动画状态
+    bool is_animating;         // 是否正在动画中
+    float animation_progress;  // 动画进度
+    int animation_type;        // 动画类型
+    
+    // 保存的窗口状态（用于恢复）
+    int32_t saved_x, saved_y;
+    int32_t saved_width, saved_height;
+    WindowState saved_state;
+    
+    // wlroots相关字段（如果使用）
+    struct wl_list link;
+    struct wlr_xwayland_surface *wlr_surface;
 } XwaylandWindowState;
 
-// Wayland窗口状态结构体
-typedef struct {
-    struct wl_list link;
-    struct wlr_surface *surface;
-    char *title;
-    int x, y;
-    int width, height;
-    int state;
+// Wayland窗口
+typedef struct WaylandWindow {
+    int32_t x, y;
+    int32_t width, height;
+    WindowState state;
+    bool focused;
+    const char* title;
+    uint32_t window_id;
+    void* surface;
     float opacity;
-    int z_order;
-    WindowSavedState saved_state;
-} WaylandWindowState;
+    int32_t z_order;           // Z轴顺序
+    void* render_data;         // 渲染相关数据
+    bool is_dirty;             // 脏标记
+    DirtyRect* dirty_regions;  // 脏区域列表
+    int32_t dirty_region_count;// 脏区域数量
+    
+    // 多窗口管理增强
+    int32_t workspace_id;      // 所属工作区ID
+    int32_t group_id;          // 所属窗口组ID
+    bool is_fullscreen;        // 是否全屏
+    bool is_maximized;         // 是否最大化
+    bool is_minimized;         // 是否最小化
+    bool is_shaded;            // 是否最小化到标题栏
+    bool is_sticky;            // 是否在所有工作区显示
+    
+    // 窗口装饰和特效
+    bool has_shadow;           // 是否有阴影
+    bool has_border;           // 是否有边框
+    float shadow_opacity;      // 阴影透明度
+    int32_t shadow_size;       // 阴影大小
+    
+    // 动画状态
+    bool is_animating;         // 是否正在动画中
+    float animation_progress;  // 动画进度
+    int animation_type;        // 动画类型
+    
+    // 保存的窗口状态（用于恢复）
+    int32_t saved_x, saved_y;
+    int32_t saved_width, saved_height;
+    WindowState saved_state;
+    
+    // wlroots相关字段（如果使用）
+    struct wl_list link;
+    struct wlr_surface *wlr_surface;
+    bool mapped;
+} WaylandWindow;
 
 // 窗口管理相关函数声明
 int compositor_activate_window(const char* window_title);
@@ -101,5 +174,20 @@ int compositor_get_all_windows_info(WindowInfo** windows, int* count);
 int compositor_get_window_info_by_ptr(void* window_ptr, bool is_wayland_window, WindowInfo* info);
 int compositor_get_active_window_info(WindowInfo* info);
 int compositor_get_window_count(bool include_wayland, bool include_xwayland);
+
+// 添加Xwayland窗口函数（内部使用）
+int add_xwayland_window(XwaylandWindow* window);
+
+// 添加Wayland窗口函数（内部使用）
+int add_wayland_window(WaylandWindow* window);
+
+// 窗口排序函数 - 根据Z顺序排序窗口
+void compositor_sort_windows_by_z_order(CompositorState* state);
+
+// 清理所有窗口
+void cleanup_windows(CompositorState* state);
+
+// 查找窗口函数（根据标题）
+void* find_window_by_title(const char* title, bool* out_is_wayland);
 
 #endif // COMPOSITOR_WINDOW_H

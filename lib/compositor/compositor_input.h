@@ -3,12 +3,14 @@
 
 #include <stdbool.h>
 #include <stdint.h>
+#include "compositor.h" // 包含基础定义
+#include "compositor_window.h" // 包含窗口相关定义
 
-// 前向声明
-struct CompositorState;
+// 前向声明（如果需要）
+// struct CompositorState;
 typedef struct CompositorState CompositorState;
 
-// 设备类型
+// 设备类型枚举
 enum {
     COMPOSITOR_DEVICE_TYPE_UNKNOWN = 0,
     COMPOSITOR_DEVICE_TYPE_MOUSE = 1,
@@ -21,21 +23,23 @@ enum {
     COMPOSITOR_DEVICE_TYPE_REMOTE = 8,     // 遥控器
     COMPOSITOR_DEVICE_TYPE_TRACKBALL = 9   // 轨迹球
 };
+typedef int CompositorDeviceType;
 
-// 输入事件类型
+// 输入事件类型枚举
 enum {
-    COMPOSITOR_INPUT_NONE = 0,
-    COMPOSITOR_INPUT_MOTION = 1,           // 鼠标/触摸移动
-    COMPOSITOR_INPUT_BUTTON = 2,           // 按钮点击
-    COMPOSITOR_INPUT_KEY = 3,              // 键盘按键
-    COMPOSITOR_INPUT_TOUCH = 4,            // 触摸事件
-    COMPOSITOR_INPUT_PEN = 5,              // 触控笔事件
-    COMPOSITOR_INPUT_JOYSTICK_AXIS = 6,    // 摇杆轴
-    COMPOSITOR_INPUT_JOYSTICK_BUTTON = 7,  // 摇杆按钮
-    COMPOSITOR_INPUT_SCROLL = 8,           // 滚动事件
-    COMPOSITOR_INPUT_GESTURE = 9,          // 手势事件
-    COMPOSITOR_INPUT_DRAG = 10             // 拖拽事件
+    COMPOSITOR_INPUT_EVENT_NONE = 0,
+    COMPOSITOR_INPUT_EVENT_MOTION = 1,           // 鼠标/触摸移动
+    COMPOSITOR_INPUT_EVENT_BUTTON = 2,           // 按钮点击
+    COMPOSITOR_INPUT_EVENT_KEY = 3,              // 键盘按键
+    COMPOSITOR_INPUT_EVENT_TOUCH = 4,            // 触摸事件
+    COMPOSITOR_INPUT_EVENT_PEN = 5,              // 触控笔事件
+    COMPOSITOR_INPUT_EVENT_JOYSTICK_AXIS = 6,    // 摇杆轴
+    COMPOSITOR_INPUT_EVENT_JOYSTICK_BUTTON = 7,  // 摇杆按钮
+    COMPOSITOR_INPUT_EVENT_SCROLL = 8,           // 滚动事件
+    COMPOSITOR_INPUT_EVENT_GESTURE = 9,          // 手势事件
+    COMPOSITOR_INPUT_EVENT_DRAG = 10             // 拖拽事件
 };
+typedef int CompositorInputEventType;
 
 // 输入状态
 enum {
@@ -44,7 +48,7 @@ enum {
     COMPOSITOR_INPUT_STATE_MOVE = 2
 };
 
-// 手势类型
+// 手势类型枚举
 enum {
     COMPOSITOR_GESTURE_NONE = 0,
     COMPOSITOR_GESTURE_PINCH = 1,          // 捏合手势（缩放）
@@ -52,12 +56,14 @@ enum {
     COMPOSITOR_GESTURE_SWIPE = 3,          // 滑动手势
     COMPOSITOR_GESTURE_TWO_FINGER_TAP = 4  // 双指点击
 };
+typedef int CompositorGestureType;
 
 // 输入设备信息
-typedef struct {
+typedef struct CompositorInputDevice {
     int32_t device_id;
-    int32_t device_type;
-    const char* device_name;
+    int32_t type;  // 改为type以匹配实现中的使用
+    const char* name;  // 改为name以匹配实现中的使用
+    bool enabled;  // 设备是否启用
     bool has_motion;
     bool has_buttons;
     bool has_touch;
@@ -73,6 +79,8 @@ typedef struct {
     bool has_tilt_sensor;
     bool has_rotation_sensor;
     bool has_accelerometer;
+    // 设备特定数据
+    void* device_data;
 } CompositorInputDevice;
 
 // 触摸点信息
@@ -88,7 +96,7 @@ typedef struct {
 } TouchPoint;
 
 // 手势信息结构体（扩展）
-typedef struct {
+typedef struct CompositorGestureInfo {
     int32_t type;
     int32_t touch_count;
     float scale;     // 缩放因子
@@ -102,6 +110,14 @@ typedef struct {
     int64_t duration;    // 手势持续时间
     int click_count;     // 点击次数（1=单击，2=双击，3=三击）
 } CompositorGestureInfo;
+
+// 输入捕获模式
+enum {
+    COMPOSITOR_INPUT_CAPTURE_MODE_NORMAL = 0,
+    COMPOSITOR_INPUT_CAPTURE_MODE_EXCLUSIVE = 1,
+    COMPOSITOR_INPUT_CAPTURE_MODE_DISABLED = 2
+};
+typedef int CompositorInputCaptureMode;
 
 // 手势事件数据
 typedef struct {
