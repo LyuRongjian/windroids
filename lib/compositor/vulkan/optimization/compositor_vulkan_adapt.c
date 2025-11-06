@@ -5,7 +5,7 @@
 
 #include "compositor_vulkan_adapt.h"
 #include "compositor_vulkan_perf.h"
-#include "compositor_vulkan_opt.h"
+#include "compositor_vulkan_optimization.h"
 #include "compositor_utils.h"
 #include <math.h>
 

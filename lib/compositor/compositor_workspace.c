@@ -3,7 +3,7 @@
  * Workspace management module implementation
  */
 
-#include "compositor_workspace..h"
+#include "compositor_workspace.h"
 #include "compositor_utils.h"
 #include <stdlib.h>
 #include <string.h>

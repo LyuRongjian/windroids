@@ -1,7 +1,7 @@
 #ifndef COMPOSITOR_VULKAN_WINDOW_H
 #define COMPOSITOR_VULKAN_WINDOW_H
 
-#include "compositor_vulkan.h"
+#include "../core/compositor_vulkan_core.h"
 
 // 窗口信息结构体
 typedef struct {

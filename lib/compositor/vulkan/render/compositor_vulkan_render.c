@@ -1,7 +1,7 @@
 #include "compositor_vulkan_render.h"
-#include &lt;stdlib.h&gt;
-#include &lt;string.h&gt;
-#include &lt;time.h&gt;
+#include <stdlib.h>
+#include <string.h>
+#include <time.h>
 
 // 全局状态指针
 extern CompositorState* g_compositor_state;

@@ -739,23 +739,20 @@ bool compositor_is_initialized(void) {
     return g_initialized;
 }
 
-// 工作区管理相关函数现在在 compositor_workspace..c 中实现
+// 工作区管理相关函数现在在 compositor_workspace.c 中实现
 
 // 将窗口移动到指定工作区
-// find_window_by_title 辅助函数现在在 compositor_workspace..c 中实现
-// compositor_move_window_to_workspace 函数现在在 compositor_workspace..c 中实现
+// find_window_by_title 辅助函数现在在 compositor_workspace.c 中实现
+// compositor_move_window_to_workspace 函数现在在 compositor_workspace.c 中实现
 
-// collect_visible_windows 辅助函数现在在 compositor_workspace..c 中实现
-// compositor_tile_windows 函数现在在 compositor_workspace..c 中实现
+// collect_visible_windows 辅助函数现在在 compositor_workspace.c 中实现
+// compositor_tile_windows 函数现在在 compositor_workspace.c 中实现
 
-// compositor_cascade_windows 函数现在在 compositor_workspace..c 中实现
+// compositor_cascade_windows 函数现在在 compositor_workspace.c 中实现
 
-// compositor_group_windows 和 compositor_ungroup_windows 函数现在在 compositor_workspace..c 中实现
+// compositor_group_windows 和 compositor_ungroup_windows 函数现在在 compositor_workspace.c 中实现
 
-// compositor_close_all_windows 函数现在在 compositor_workspace..c 中实现    log_message(COMPOSITOR_LOG_INFO, "Closed %d windows", closed_count);
-    
-    return COMPOSITOR_OK;
-}
+// compositor_close_all_windows 函数现在在 compositor_workspace.c 中实现
 
 // 最小化所有窗口
 int compositor_minimize_all_windows() {

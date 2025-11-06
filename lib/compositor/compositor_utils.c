@@ -1,13 +1,5 @@
 #include "compositor_utils.h"
 #include "compositor.h"
-#include <time.h>
-
-// 全局状态引用
-static CompositorState* g_compositor_state_ref = NULL;
-static CompositorPerfStat g_performance_stats = {0};
-static int64_t g_render_start_time = 0;
-static size_t g_memory_usage_threshold = 0;
-#include "compositor.h"
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -15,6 +7,10 @@ static size_t g_memory_usage_threshold = 0;
 #include <math.h>
 #include <sys/time.h>
 #include <stdarg.h>
+
+// 全局状态引用
+static CompositorState* g_compositor_state_ref = NULL;
+static size_t g_memory_usage_threshold = 0;
 
 // 全局错误状态
 static int g_last_error = COMPOSITOR_OK;
@@ -46,7 +42,7 @@ static PerformanceStats g_performance_stats = {
 static float g_frame_times[60] = {0.0f};
 static int g_frame_time_index = 0;
 static clock_t g_last_frame_time = 0;
-static clock_t g_render_start_time = 0;
+
 
 // 内存跟踪数据
 static MemoryTracker g_memory_tracker = {
@@ -146,46 +142,7 @@ void utils_set_log_level(int level) {
     }
 }
 
-// 更新性能统计
-void update_performance_stats(void) {
-    clock_t current_time = clock();
-    if (g_last_frame_time > 0) {
-        float frame_time = (float)(current_time - g_last_frame_time) / CLOCKS_PER_SEC;
-        
-        // 保存帧时间
-        g_frame_times[g_frame_time_index] = frame_time;
-        g_frame_time_index = (g_frame_time_index + 1) % 60;
-        
-        // 计算统计数据
-        float total_time = 0.0f;
-        int valid_frames = 0;
-        float min_time = 1.0f;  // 初始值设为较大的值
-        float max_time = 0.0f;
-        
-        for (int i = 0; i < 60; i++) {
-            if (g_frame_times[i] > 0) {
-                total_time += g_frame_times[i];
-                valid_frames++;
-                if (g_frame_times[i] < min_time) min_time = g_frame_times[i];
-                if (g_frame_times[i] > max_time) max_time = g_frame_times[i];
-            }
-        }
-        
-        if (valid_frames > 0) {
-            g_performance_stats.avg_frame_time = total_time / valid_frames;
-            g_performance_stats.fps = 1.0f / g_performance_stats.avg_frame_time;
-            g_performance_stats.min_frame_time = min_time;
-            g_performance_stats.max_frame_time = max_time;
-        }
-        
-        // 记录性能警告
-        if (g_performance_stats.fps < 30.0f) {
-            log_message(COMPOSITOR_LOG_WARN, "Low FPS detected: %.1f", g_performance_stats.fps);
-        }
-    }
-    
-    g_last_frame_time = current_time;
-}
+// 更新性能统计函数将在后面实现
 
 // 获取当前FPS
 float compositor_get_fps(void) {
@@ -490,8 +447,7 @@ CompositorRect expand_rect(const CompositorRect* rect, int padding) {
     return result;
 }
 
-static size_t g_memory_usage_threshold = 0;
-static CompositorState* g_compositor_state_ref = NULL;
+static bool g_initialized = false;
 static bool g_initialized = false;
 
 // 设置compositor状态引用

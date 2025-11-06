@@ -1,7 +1,8 @@
 #include "compositor_vulkan_texture.h"
-#include &lt;stdlib.h&gt;
-#include &lt;string.h&gt;
-#include &lt;time.h&gt;
+#include <stdlib.h>
+#include <string.h>
+#include <time.h>
+#include <limits.h>
 
 // 静态辅助函数声明
 static uint32_t detect_texture_compression_formats(VulkanState* vulkan);

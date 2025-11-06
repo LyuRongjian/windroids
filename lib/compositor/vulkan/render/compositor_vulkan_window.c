@@ -1,10 +1,11 @@
 #include "compositor_vulkan_window.h"
 #include "compositor_vulkan_render_queue.h"
-#include "compositor_vulkan_texture.h"
+#include "../resource/compositor_vulkan_texture.h"
 #include "compositor_dirty.h"
 #include "compositor_utils.h"
-#include &lt;string.h&gt;
-#include &lt;stdlib.h&gt;
+#include <string.h>
+#include <stdlib.h>
+#include <limits.h>
 
 // 渲染所有窗口
 void render_windows(CompositorState* state) {
