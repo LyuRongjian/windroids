@@ -1,4 +1,7 @@
 #include "compositor_input_manager.h"
+#include "compositor_input_device_utils.h"
+#include "compositor_input_window_switch.h"
+#include "compositor_window_preview.h"
 #include "compositor_utils.h"
 #include <string.h>
 #include <stdlib.h>
@@ -52,6 +55,11 @@ static void* safe_realloc(void* ptr, size_t size) {
 
 // 初始化输入设备管理模块
 int compositor_input_manager_init(void) {
+    // 使用模块工具初始化
+    if (!compositor_validate_params("compositor_input_manager_init", 0, NULL)) {
+        return COMPOSITOR_ERROR_INVALID_PARAM;
+    }
+    
     g_input_devices = NULL;
     g_input_device_count = 0;
     g_input_device_capacity = 0;
@@ -64,12 +72,17 @@ int compositor_input_manager_init(void) {
     g_input_device_config.adaptive_input = true;
     g_input_device_config.input_response_time = 5;
     
-    log_message(COMPOSITOR_LOG_DEBUG, "Input manager module initialized");
-    return 0;
+    compositor_log_debug("Input manager module initialized");
+    return COMPOSITOR_OK;
 }
 
 // 清理输入设备管理模块
 void compositor_input_manager_cleanup(void) {
+    // 使用模块工具清理
+    if (!compositor_validate_params("compositor_input_manager_cleanup", 0, NULL)) {
+        return;
+    }
+    
     // 释放所有设备
     for (int i = 0; i < g_input_device_count; i++) {
         if (g_input_devices[i].name) {
@@ -86,30 +99,22 @@ void compositor_input_manager_cleanup(void) {
     g_input_device_capacity = 0;
     g_active_device = NULL;
     
-    log_message(COMPOSITOR_LOG_DEBUG, "Input manager module cleaned up");
+    compositor_log_debug("Input manager module cleaned up");
 }
 
 // 创建输入设备
 static CompositorInputDevice* create_input_device(CompositorInputDeviceType type, const char* name, int device_id) {
-    CompositorInputDevice* device = (CompositorInputDevice*)safe_malloc(sizeof(CompositorInputDevice));
+    // 使用设备工具模块创建设备
+    CompositorInputDevice* device = compositor_input_device_create(type, name, device_id);
     if (!device) {
         return NULL;
     }
     
-    memset(device, 0, sizeof(CompositorInputDevice));
-    device->type = type;
-    device->device_id = device_id;
-    device->name = strdup(name ? name : "Unknown Device");
-    device->enabled = true;
-    device->device_data = NULL;
-    
     // 初始化游戏控制器按钮状态
     memset(device->gamepad_buttons, 0, sizeof(device->gamepad_buttons));
     
-    // 设备特定能力初始化已移至compositor_input_gamepad.c
-    
-    log_message(COMPOSITOR_LOG_DEBUG, "Created input device: id=%d, type=%d, name=%s",
-               device_id, type, name ? name : "Unknown Device");
+    // 记录日志
+    compositor_input_device_log_debug("Created input device", device);
     
     return device;
 }
@@ -117,11 +122,10 @@ static CompositorInputDevice* create_input_device(CompositorInputDeviceType type
 // 注册输入设备
 int compositor_input_manager_register_device(CompositorInputDeviceType type, const char* name, int device_id) {
     // 检查设备是否已注册
-    for (int i = 0; i < g_input_device_count; i++) {
-        if (g_input_devices[i].device_id == device_id) {
-            log_message(COMPOSITOR_LOG_WARN, "Device with ID %d already registered", device_id);
-            return COMPOSITOR_ERROR_ALREADY_EXISTS;
-        }
+    DeviceSearchResult search_result = compositor_input_device_find_by_id(device_id);
+    if (search_result.found) {
+        log_message(COMPOSITOR_LOG_WARN, "Device with ID %d already registered", device_id);
+        return COMPOSITOR_ERROR_ALREADY_EXISTS;
     }
     
     // 扩展设备数组（如果需要）
@@ -142,35 +146,19 @@ int compositor_input_manager_register_device(CompositorInputDeviceType type, con
         return COMPOSITOR_ERROR_MEMORY;
     }
     
-    // 设置设备优先级（根据设备类型）
-    switch (type) {
-        case COMPOSITOR_DEVICE_TYPE_MOUSE:
-            device->priority = 8; // 鼠标优先级较高
-            break;
-        case COMPOSITOR_DEVICE_TYPE_KEYBOARD:
-            device->priority = 9; // 键盘优先级最高
-            break;
-        case COMPOSITOR_DEVICE_TYPE_TOUCHSCREEN:
-            device->priority = 7; // 触摸屏优先级中等
-            break;
-        case COMPOSITOR_DEVICE_TYPE_PEN:
-            device->priority = 6; // 触控笔优先级中等
-            break;
-        case COMPOSITOR_DEVICE_TYPE_GAMEPAD:
-            device->priority = 5; // 游戏手柄优先级较低
-            break;
-        default:
-            device->priority = 3; // 其他设备优先级最低
-            break;
-    }
+    // 使用设备工具模块设置默认优先级
+    device->priority = compositor_input_device_get_default_priority(type);
     
     // 添加到设备列表
     g_input_devices[g_input_device_count] = *device;
     g_input_device_count++;
     
+    // 释放临时创建的设备，避免内存泄漏
+    compositor_input_device_destroy(device);
+    
     // 更新全局设备配置
     g_input_device_config.device_type_supported[type] = true;
-    g_input_device_config.device_priority[type] = device->priority;
+    g_input_device_config.device_priority[type] = g_input_devices[g_input_device_count - 1].priority;
     
     // 如果没有活动设备，设置此设备为活动设备
     if (!g_active_device) {
@@ -178,52 +166,53 @@ int compositor_input_manager_register_device(CompositorInputDeviceType type, con
     }
     
     log_message(COMPOSITOR_LOG_INFO, "Registered input device: %s (ID: %d, Type: %d, Priority: %d)", 
-               name, device_id, type, device->priority);
+               name, device_id, type, g_input_devices[g_input_device_count - 1].priority);
     
     return COMPOSITOR_OK;
 }
 
 // 注销输入设备
 int compositor_input_manager_unregister_device(int device_id) {
-    for (int i = 0; i < g_input_device_count; i++) {
-        if (g_input_devices[i].device_id == device_id) {
-            // 释放设备名称
-            if (g_input_devices[i].name) {
-                free((void*)g_input_devices[i].name);
-            }
-            
-            // 如果是活动设备，清除活动设备引用
-            if (g_active_device == &g_input_devices[i]) {
-                g_active_device = NULL;
-            }
-            
-            // 移除设备（将最后一个设备移到当前位置）
-            if (i < g_input_device_count - 1) {
-                g_input_devices[i] = g_input_devices[g_input_device_count - 1];
-            }
-            g_input_device_count--;
-            
-            log_message(COMPOSITOR_LOG_INFO, "Unregistered input device: ID %d", device_id);
-            return COMPOSITOR_OK;
-        }
+    DeviceSearchResult search_result = compositor_input_device_find_by_id(device_id);
+    if (!search_result.found) {
+        return COMPOSITOR_ERROR_DEVICE_NOT_FOUND;
     }
     
-    return COMPOSITOR_ERROR_DEVICE_NOT_FOUND;
+    CompositorInputDevice* device = search_result.device;
+    int index = search_result.index;
+    
+    // 释放设备名称
+    if (device->name) {
+        free((void*)device->name);
+    }
+    
+    // 如果是活动设备，清除活动设备引用
+    if (g_active_device == device) {
+        g_active_device = NULL;
+    }
+    
+    // 移除设备（将最后一个设备移到当前位置）
+    if (index < g_input_device_count - 1) {
+        g_input_devices[index] = g_input_devices[g_input_device_count - 1];
+    }
+    g_input_device_count--;
+    
+    log_message(COMPOSITOR_LOG_INFO, "Unregistered input device: ID %d", device_id);
+    return COMPOSITOR_OK;
 }
 
 // 获取输入设备
 CompositorInputDevice* compositor_input_manager_get_device(int device_id) {
-    for (int i = 0; i < g_input_device_count; i++) {
-        if (g_input_devices[i].device_id == device_id) {
-            return &g_input_devices[i];
-        }
-    }
-    return NULL;
+    DeviceSearchResult search_result = compositor_input_device_find_by_id(device_id);
+    return search_result.found ? search_result.device : NULL;
 }
 
 // 获取输入设备列表
+// 获取输入设备列表
 int compositor_input_manager_get_devices(CompositorInputDevice** out_devices, int* out_count) {
-    if (!out_devices || !out_count) {
+    // 使用模块工具验证参数
+    if (!compositor_validate_params("compositor_input_manager_get_devices", 
+                                   2, (void*[]){out_devices, out_count})) {
         return COMPOSITOR_ERROR_INVALID_ARGS;
     }
     
@@ -234,60 +223,59 @@ int compositor_input_manager_get_devices(CompositorInputDevice** out_devices, in
 }
 
 // 设置设备启用状态
+// 设置设备启用状态
 int compositor_input_manager_set_device_enabled(int device_id, bool enabled) {
-    CompositorInputDevice* device = compositor_input_manager_get_device(device_id);
-    if (!device) {
+    DeviceSearchResult search_result = compositor_input_device_find_by_id(device_id);
+    if (!search_result.found) {
         return COMPOSITOR_ERROR_DEVICE_NOT_FOUND;
     }
     
+    CompositorInputDevice* device = search_result.device;
     device->enabled = enabled;
-    log_message(COMPOSITOR_LOG_DEBUG, "Device %d enabled: %s", device_id, enabled ? "true" : "false");
+    
+    compositor_input_device_log_debug("Device enabled status changed", device);
     
     return COMPOSITOR_OK;
 }
 
 // 设置输入设备优先级
+// 设置输入设备优先级
 int compositor_input_manager_set_device_priority(CompositorInputDeviceType type, int priority) {
-    if (type < 0 || type >= 10 || priority < 0 || priority > 10) {
+    // 使用设备工具模块验证参数
+    if (!compositor_validate_device_priority(type, priority)) {
         return COMPOSITOR_ERROR_INVALID_ARGS;
     }
     
-    g_input_device_config.device_priority[type] = priority;
+    // 使用设备工具模块更新所有同类型设备的优先级
+    compositor_input_device_set_priority_for_type(g_input_devices, g_input_device_count, type, priority);
     
-    // 更新已注册设备的优先级
-    for (int i = 0; i < g_input_device_count; i++) {
-        if (g_input_devices[i].type == type) {
-            g_input_devices[i].priority = priority;
-        }
-    }
+    // 更新全局配置
+    g_input_device_config.device_priority[type] = priority;
     
     // 重新选择活动设备
     g_active_device = compositor_input_manager_get_highest_priority_active_device();
     
-    log_message(COMPOSITOR_LOG_INFO, "Set device type %d priority to %d", type, priority);
+    compositor_log_info("Set device type %d priority to %d", type, priority);
     
     return COMPOSITOR_OK;
 }
 
 // 获取最高优先级的活动设备
 CompositorInputDevice* compositor_input_manager_get_highest_priority_active_device(void) {
-    CompositorInputDevice* best_device = NULL;
-    int highest_priority = -1;
-    
-    for (int i = 0; i < g_input_device_count; i++) {
-        CompositorInputDevice* device = &g_input_devices[i];
-        if (device->enabled && g_input_device_config.device_priority[device->type] > highest_priority) {
-            highest_priority = g_input_device_config.device_priority[device->type];
-            best_device = device;
-        }
-    }
-    
-    return best_device;
+    return compositor_input_device_find_highest_priority();
 }
 
 // 设置活动输入设备
+// 设置活动输入设备
 void compositor_input_manager_set_active_device(int device_id) {
-    g_active_device = compositor_input_manager_get_device(device_id);
+    DeviceSearchResult search_result = compositor_input_device_find_by_id(device_id);
+    if (search_result.found) {
+        g_active_device = search_result.device;
+        compositor_input_device_log_debug("Set as active device", g_active_device);
+    } else {
+        log_message(COMPOSITOR_LOG_WARNING, "Failed to set active device: ID %d not found", device_id);
+        g_active_device = NULL;
+    }
 }
 
 // 获取活动输入设备
@@ -298,7 +286,7 @@ CompositorInputDevice* compositor_input_manager_get_active_device(void) {
 // 启用/禁用自适应输入处理
 int compositor_input_manager_set_adaptive_mode(bool enabled) {
     g_input_device_config.adaptive_input = enabled;
-    log_message(COMPOSITOR_LOG_INFO, "Adaptive input processing %s", enabled ? "enabled" : "disabled");
+    compositor_log_info("Adaptive input processing %s", enabled ? "enabled" : "disabled");
     return COMPOSITOR_OK;
 }
 
@@ -310,13 +298,98 @@ CompositorInputCaptureMode compositor_input_manager_get_capture_mode(void) {
 // 设置输入捕获模式
 void compositor_input_manager_set_capture_mode(CompositorInputCaptureMode mode) {
     g_input_capture_mode = mode;
-    log_message(COMPOSITOR_LOG_DEBUG, "Input capture mode set to: %d", mode);
+    compositor_log_debug("Input capture mode set to: %d", mode);
 }
 
 // 检查设备类型是否支持
-bool compositor_input_manager_is_device_type_supported(CompositorDeviceType device_type) {
-    if (device_type < 0 || device_type >= 10) {
-        return false;
+bool compositor_input_manager_is_device_type_supported(CompositorInputDeviceType device_type) {
+    // 使用设备工具模块验证设备类型
+    return compositor_validate_device_type(device_type) && 
+           g_input_device_config.device_type_supported[device_type];
+}
+
+// 获取性能统计
+int compositor_input_manager_get_performance_stats(CompositorInputPerformanceStats* out_stats) {
+    // 使用模块工具验证参数
+    if (!compositor_validate_params("compositor_input_manager_get_performance_stats", 
+                                   1, (void*[]){out_stats})) {
+        return COMPOSITOR_ERROR_INVALID_ARGS;
     }
-    return g_input_device_config.device_type_supported[device_type];
+    
+    // 实际实现中应该从性能模块获取统计信息
+    // 这里暂时返回空统计
+    memset(out_stats, 0, sizeof(CompositorInputPerformanceStats));
+    
+    return COMPOSITOR_OK;
+}
+
+// 重置性能统计
+int compositor_input_manager_reset_performance_stats(void) {
+    // 使用模块工具记录日志
+    compositor_log_debug("Performance stats reset");
+    
+    return COMPOSITOR_OK;
+}
+
+// 获取设备配置
+int compositor_input_manager_get_device_config(CompositorInputDeviceConfig* out_config) {
+    // 使用模块工具验证参数
+    if (!compositor_validate_params("compositor_input_manager_get_device_config", 
+                                   1, (void*[]){out_config})) {
+        return COMPOSITOR_ERROR_INVALID_ARGS;
+    }
+    
+    // 复制当前配置
+    *out_config = g_input_device_config;
+    
+    return COMPOSITOR_OK;
+}
+
+// 设置设备配置
+int compositor_input_manager_set_device_config(const CompositorInputDeviceConfig* config) {
+    // 使用模块工具验证参数
+    if (!compositor_validate_params("compositor_input_manager_set_device_config", 
+                                   1, (void*[]){(void*)config})) {
+        return COMPOSITOR_ERROR_INVALID_ARGS;
+    }
+    
+    // 更新配置
+    g_input_device_config = *config;
+    
+    // 重新选择活动设备
+    g_active_device = compositor_input_manager_get_highest_priority_active_device();
+    
+    compositor_log_debug("Device configuration updated");
+    
+    return COMPOSITOR_OK;
+}
+
+// 获取设备能力
+int compositor_input_manager_get_device_capabilities(int device_id, uint32_t* out_capabilities) {
+    // 使用设备工具模块验证参数
+    if (!compositor_validate_params("compositor_input_manager_get_device_capabilities", 
+                                   2, (void*[]){(void*)(intptr_t)device_id, out_capabilities})) {
+        return COMPOSITOR_ERROR_INVALID_ARGS;
+    }
+    
+    // 使用设备工具模块查找设备
+    DeviceSearchResult search_result = compositor_input_device_find_by_id(device_id);
+    if (!search_result.found) {
+        return COMPOSITOR_ERROR_DEVICE_NOT_FOUND;
+    }
+    
+    // 使用设备工具模块获取能力
+    *out_capabilities = compositor_input_device_get_capabilities(search_result.device);
+    
+    return COMPOSITOR_OK;
+}
+
+// 获取设备数量
+int compositor_input_manager_get_device_count(void) {
+    return compositor_input_device_count_all();
+}
+
+// 获取已启用设备数量
+int compositor_input_manager_get_enabled_device_count(void) {
+    return compositor_input_device_count_enabled();
 }

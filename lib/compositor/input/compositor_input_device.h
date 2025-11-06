@@ -1,63 +1,20 @@
 /*
  * WinDroids Compositor
- * Input Device Management Module
+ * Input Device Management
  */
 
 #ifndef COMPOSITOR_INPUT_DEVICE_H
 #define COMPOSITOR_INPUT_DEVICE_H
 
-#include "compositor.h"
-#include <stdbool.h>
+#include "compositor_input_type.h"
+#include "compositor_utils.h"
 
-// 输入设备类型枚举
-typedef enum {
-    COMPOSITOR_DEVICE_TYPE_KEYBOARD,
-    COMPOSITOR_DEVICE_TYPE_MOUSE,
-    COMPOSITOR_DEVICE_TYPE_TOUCHSCREEN,
-    COMPOSITOR_DEVICE_TYPE_PEN,
-    COMPOSITOR_DEVICE_TYPE_GAMEPAD,
-    COMPOSITOR_DEVICE_TYPE_JOYSTICK,
-    COMPOSITOR_DEVICE_TYPE_TRACKPAD,
-    COMPOSITOR_DEVICE_TYPE_TRACKBALL,
-    COMPOSITOR_DEVICE_TYPE_UNKNOWN
-} CompositorInputDeviceType;
+#ifdef __cplusplus
+extern "C" {
+#endif
 
-// 游戏控制器按钮状态结构体
-typedef struct {
-    bool a, b, x, y;
-    bool dpad_up, dpad_down, dpad_left, dpad_right;
-    bool l1, r1, l2, r2;
-    bool select, start, home;
-    bool l3, r3;
-    float lx, ly, rx, ry; // 摇杆位置 (-1.0 到 1.0)
-    float l2_value, r2_value; // 扳机值 (0.0 到 1.0)
-} CompositorGamepadState;
-
-// 输入设备结构体
-typedef struct {
-    int device_id;
-    CompositorInputDeviceType type;
-    char* name;
-    bool enabled;
-    void* device_data; // 设备特定数据
-    
-    // 设备能力标志
-    bool has_pressure_sensor;
-    bool has_tilt_sensor;
-    bool has_rotation_sensor;
-    bool has_accelerometer;
-    
-    // 游戏控制器状态
-    CompositorGamepadState gamepad_buttons;
-} CompositorInputDevice;
-
-// 输入捕获模式枚举
-typedef enum {
-    COMPOSITOR_INPUT_CAPTURE_MODE_NORMAL,
-    COMPOSITOR_INPUT_CAPTURE_MODE_GRAB,
-    COMPOSITOR_INPUT_CAPTURE_MODE_EXCLUSIVE,
-    COMPOSITOR_INPUT_CAPTURE_MODE_DISABLED
-} CompositorInputCaptureMode;
+// 最大触摸点数
+#define MAX_TOUCH_POINTS 10
 
 // 设备管理函数声明
 
@@ -80,24 +37,43 @@ int compositor_input_unregister_device(int device_id);
 int compositor_input_enable_device(int device_id, bool enabled);
 
 // 获取设备状态
-CompositorInputDevice* compositor_input_get_device(int device_id);
+int compositor_input_get_device(int device_id, CompositorInputDevice* device);
 
 // 获取设备数量
 int compositor_input_get_device_count(void);
 
 // 获取设备列表
-CompositorInputDevice* compositor_input_get_devices(void);
+int compositor_input_get_devices(CompositorInputDevice** devices, int* count, int max_count);
 
 // 设置设备特定配置
 int compositor_input_set_device_config(int device_id, void* config);
 
 // 获取设备特定配置
-void* compositor_input_get_device_config(int device_id);
+int compositor_input_get_device_config(int device_id, void** config);
 
 // 获取活动输入设备
-CompositorInputDevice* compositor_input_get_active_device(void);
+int compositor_input_get_active_device(CompositorInputDevice* device);
 
 // 设置活动输入设备
-void compositor_input_set_active_device(int device_id);
+int compositor_input_set_active_device(int device_id);
+
+// 设备优先级管理
+int compositor_input_device_set_priority(int device_id, int priority);
+int compositor_input_device_get_priority(int device_id, int* priority);
+
+// 获取设备信息
+int compositor_input_device_get_info(int device_id, CompositorInputDevice* info);
+
+// 获取设备状态
+int compositor_input_device_get_status(int device_id, bool* enabled);
+
+// 获取活动设备
+int compositor_input_device_get_active(CompositorInputDevice* device);
+
+// 获取所有设备
+int compositor_input_device_get_all(CompositorInputDevice** devices, int* count, int max_count);
+
+// 获取指定类型的设备
+int compositor_input_device_get_by_type(CompositorInputDeviceType type, CompositorInputDevice** devices, int* count, int max_count);
 
 #endif // COMPOSITOR_INPUT_DEVICE_H

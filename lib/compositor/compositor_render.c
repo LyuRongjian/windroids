@@ -6,6 +6,7 @@
 #include "compositor_render.h"
 #include "compositor_utils.h"
 #include "compositor_perf.h"
+#include "input/compositor_window_preview.h"
 #include <android/native_window.h>
 #include <stdlib.h>
 #include <string.h>
@@ -99,21 +100,28 @@ int render_frame(void) {
     // 7. 提交命令缓冲区
     // 8. 呈现交换链图像
     
-    // 绘制窗口时需要考虑脏区域优化
-    if (g_state->use_dirty_rect_optimization && g_state->dirty_rect_count > 0) {
-        // 只渲染脏区域
-        for (int i = 0; i < g_state->dirty_rect_count; i++) {
-            DirtyRect* rect = &g_state->dirty_rects[i];
-            log_message(COMPOSITOR_LOG_DEBUG, "Rendering dirty rect: %d,%d,%d,%d", 
-                       rect->x, rect->y, rect->width, rect->height);
-            
-            // 这里实现脏区域渲染逻辑
-        }
+    // 检查是否需要渲染窗口预览
+    if (compositor_window_preview_is_visible()) {
+        // 渲染窗口预览
+        compositor_window_preview_render();
     } else {
-        // 渲染整个屏幕
-        log_message(COMPOSITOR_LOG_DEBUG, "Rendering full screen");
-        
-        // 这里实现全屏渲染逻辑
+        // 正常窗口渲染
+        // 绘制窗口时需要考虑脏区域优化
+        if (g_state->use_dirty_rect_optimization && g_state->dirty_rect_count > 0) {
+            // 只渲染脏区域
+            for (int i = 0; i < g_state->dirty_rect_count; i++) {
+                DirtyRect* rect = &g_state->dirty_rects[i];
+                log_message(COMPOSITOR_LOG_DEBUG, "Rendering dirty rect: %d,%d,%d,%d", 
+                           rect->x, rect->y, rect->width, rect->height);
+                
+                // 这里实现脏区域渲染逻辑
+            }
+        } else {
+            // 渲染整个屏幕
+            log_message(COMPOSITOR_LOG_DEBUG, "Rendering full screen");
+            
+            // 这里实现全屏渲染逻辑
+        }
     }
     
     g_state->frame_count++;

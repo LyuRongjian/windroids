@@ -51,7 +51,7 @@ int compositor_input_performance_init(void) {
     g_input_performance_stats.min_response_time = LLONG_MAX;
     
     log_message(COMPOSITOR_LOG_DEBUG, "Input performance module initialized");
-    return 0;
+    return COMPOSITOR_OK;
 }
 
 // 清理输入性能统计模块

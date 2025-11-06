@@ -2,6 +2,7 @@
 #define COMPOSITOR_INPUT_SIMULATION_H
 
 #include "compositor_input_types.h"
+#include "compositor_utils.h"
 
 #ifdef __cplusplus
 extern "C" {

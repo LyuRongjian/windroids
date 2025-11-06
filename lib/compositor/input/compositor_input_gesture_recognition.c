@@ -119,7 +119,7 @@ static void recognize_advanced_gesture(CompositorGestureType* gesture_type, int 
 // 手势识别初始化
 int compositor_gesture_recognition_init(void) {
     memset(&g_gesture_state, 0, sizeof(g_gesture_state));
-    return 0;
+    return COMPOSITOR_OK;
 }
 
 // 手势识别清理

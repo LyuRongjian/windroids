@@ -5,6 +5,7 @@
 
 #include "compositor_input_gamepad.h"
 #include "compositor_input.h"
+#include "compositor_utils.h"
 #include <stdlib.h>
 #include <string.h>
 #include <math.h>
@@ -49,7 +50,7 @@ void compositor_input_gamepad_set_state(CompositorState* state)
 int compositor_input_gamepad_init(void)
 {
     if (!g_compositor_state) {
-        return -1;
+        return COMPOSITOR_ERROR_NOT_INITIALIZED;
     }
     
     // 初始化游戏手柄和触控笔相关资源
@@ -66,7 +67,7 @@ int compositor_input_gamepad_init(void)
     g_pen_config.enable_tilt = true;
     g_pen_config.pressure_sensitivity = 1.0f;
     
-    return 0;
+    return COMPOSITOR_OK;
 }
 
 // 清理游戏手柄/触控笔模块

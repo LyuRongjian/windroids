@@ -12,6 +12,8 @@
 #include "compositor_utils.h" // 包含工具函数头文件
 #include "compositor_render.h" // 包含渲染模块头文件
 #include "compositor_dirty.h" // 包含脏区域管理头文件
+#include "input/compositor_input_window_switch.h" // 包含窗口切换头文件
+#include "input/compositor_window_preview.h" // 包含窗口预览头文件
 
 // 全局状态
 static CompositorState g_compositor_state;
@@ -234,6 +236,19 @@ int compositor_init(ANativeWindow* window, int width, int height, CompositorConf
     
     // 设置窗口状态指针
     compositor_window_set_state(&g_compositor_state);
+    
+    // 初始化窗口切换系统
+    if (compositor_input_init_window_switch(&g_compositor_state) != COMPOSITOR_OK) {
+        log_message(COMPOSITOR_LOG_ERROR, "Failed to initialize window switch system");
+        goto cleanup;
+    }
+    
+    // 初始化窗口预览系统
+    compositor_window_preview_set_state(&g_compositor_state);
+    if (compositor_window_preview_init() != COMPOSITOR_OK) {
+        log_message(COMPOSITOR_LOG_ERROR, "Failed to initialize window preview system");
+        goto cleanup;
+    }
     
     // 初始化性能统计
     g_compositor_state.last_frame_time = 0;
@@ -555,6 +570,11 @@ void compositor_destroy(void) {
     compositor_events_cleanup();
     compositor_window_cleanup();
     compositor_input_cleanup();
+    
+    // 清理窗口切换和预览系统
+    compositor_input_window_switch_cleanup();
+    compositor_window_preview_cleanup();
+    
     compositor_utils_cleanup();
     
     g_initialized = false;

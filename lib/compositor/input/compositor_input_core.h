@@ -2,7 +2,8 @@
 #define COMPOSITOR_INPUT_CORE_H
 
 #include "compositor.h"
-#include "compositor_input_types.h"
+#include "compositor_input_type.h"
+#include "compositor_utils.h"
 #include <stdbool.h>
 
 #ifdef __cplusplus
@@ -18,7 +19,8 @@ void compositor_input_core_cleanup(void);
 
 // 输入事件处理入口
 int compositor_handle_input_event(CompositorInputEvent* event);
-void process_input_events(void);
+void process_input_events(int timeout_ms);
+bool compositor_input_get_next_event(CompositorInputEvent* out_event, int timeout_ms);
 
 // 设备管理
 int compositor_input_register_device(CompositorInputDeviceType type, const char* name, int device_id);
@@ -37,9 +39,11 @@ CompositorInputCaptureMode compositor_input_get_capture_mode(void);
 
 // 性能统计
 int compositor_input_get_performance_stats(CompositorInputPerformanceStats* stats);
+int compositor_input_core_get_performance_stats(CompositorInputPerformanceStats* stats);
+int compositor_input_core_reset_performance_stats(void);
 
 // 设备能力查询
-bool compositor_input_is_device_type_supported(CompositorDeviceType device_type);
+bool compositor_input_is_device_type_supported(CompositorInputDeviceType device_type);
 
 #ifdef __cplusplus
 }

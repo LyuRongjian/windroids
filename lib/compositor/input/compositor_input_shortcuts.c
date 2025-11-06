@@ -5,7 +5,7 @@
 
 // 键盘快捷键初始化
 int compositor_input_shortcuts_init(void) {
-    return 0;
+    return COMPOSITOR_OK;
 }
 
 // 键盘快捷键清理

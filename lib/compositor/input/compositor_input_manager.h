@@ -1,7 +1,8 @@
 #ifndef COMPOSITOR_INPUT_MANAGER_H
 #define COMPOSITOR_INPUT_MANAGER_H
 
-#include "compositor_input_types.h"
+#include "compositor_input_type.h"
+#include "compositor_utils.h"
 
 // 初始化输入设备管理模块
 int compositor_input_manager_init(void);
@@ -46,6 +47,6 @@ CompositorInputCaptureMode compositor_input_manager_get_capture_mode(void);
 void compositor_input_manager_set_capture_mode(CompositorInputCaptureMode mode);
 
 // 检查设备类型是否支持
-bool compositor_input_manager_is_device_type_supported(CompositorDeviceType device_type);
+bool compositor_input_manager_is_device_type_supported(CompositorInputDeviceType device_type);
 
 #endif // COMPOSITOR_INPUT_MANAGER_H

@@ -4,6 +4,7 @@
  */
 
 #include "compositor_input_window_switch.h"
+#include "compositor_window_preview.h"
 #include "compositor_utils.h"
 #include "compositor_window.h"
 #include <string.h>
@@ -11,6 +12,7 @@
 
 // 全局状态指针
 static CompositorState* g_compositor_state = NULL;
+static bool g_initialized = false;
 
 // Alt+Tab功能相关静态变量
 static bool g_alt_key_pressed = false;
@@ -31,6 +33,15 @@ int compositor_input_window_switch_init(void) {
         return COMPOSITOR_ERROR_NOT_INITIALIZED;
     }
     
+    // 初始化窗口预览系统
+    int result = compositor_window_preview_init();
+    if (result != COMPOSITOR_OK) {
+        return result;
+    }
+    
+    // 设置窗口预览系统的合成器状态引用
+    compositor_window_preview_set_state(g_compositor_state);
+    
     // 初始化状态
     g_alt_key_pressed = false;
     g_window_switching = false;
@@ -39,13 +50,18 @@ int compositor_input_window_switch_init(void) {
     g_window_list_count = 0;
     g_window_is_wayland_list = NULL;
     
+    g_initialized = true;
     log_message(COMPOSITOR_LOG_DEBUG, "Window switching system initialized");
     return COMPOSITOR_OK;
 }
 
 // 清理窗口切换系统
 void compositor_input_window_switch_cleanup(void) {
+    // 清理窗口预览系统
+    compositor_window_preview_cleanup();
+    
     cleanup_window_list();
+    g_initialized = false;
     log_message(COMPOSITOR_LOG_DEBUG, "Window switching system cleaned up");
 }
 
@@ -248,27 +264,49 @@ void** compositor_input_get_window_list(int* out_count, bool** out_is_wayland) {
 
 // 显示窗口预览
 int compositor_input_show_window_previews(void) {
-    if (!g_compositor_state || g_window_list_count <= 0) {
+    if (!g_compositor_state || !g_initialized) {
+        return COMPOSITOR_ERROR_NOT_INITIALIZED;
+    }
+    
+    if (g_window_list_count <= 0) {
         return COMPOSITOR_ERROR_INVALID_STATE;
     }
     
-    // 这里应该实现窗口预览的显示逻辑
-    // 例如：创建预览窗口、显示缩略图等
+    // 设置预览窗口
+    int result = compositor_window_preview_set_windows(g_window_list, g_window_is_wayland_list, g_window_list_count);
+    if (result != COMPOSITOR_OK) {
+        return result;
+    }
     
-    log_message(COMPOSITOR_LOG_DEBUG, "Showing window previews, selected index: %d", g_selected_window_index);
+    // 设置选中的窗口
+    if (g_selected_window_index >= 0 && g_selected_window_index < g_window_list_count) {
+        compositor_window_preview_set_selected(g_selected_window_index);
+    }
+    
+    // 显示预览
+    result = compositor_window_preview_show();
+    if (result != COMPOSITOR_OK) {
+        return result;
+    }
     
     // 标记需要重绘以显示预览
     compositor_schedule_redraw();
     
+    log_message(COMPOSITOR_LOG_DEBUG, "Showing window previews for %d windows", g_window_list_count);
     return COMPOSITOR_OK;
 }
 
 // 隐藏窗口预览
 void compositor_input_hide_window_previews(void) {
-    // 这里应该实现窗口预览的隐藏逻辑
+    if (!g_compositor_state || !g_initialized) {
+        return;
+    }
+    
+    // 隐藏预览
+    compositor_window_preview_hide();
+    
+    // 标记需要重绘
+    compositor_render_invalidate();
     
     log_message(COMPOSITOR_LOG_DEBUG, "Hiding window previews");
-    
-    // 标记需要重绘以清除预览
-    compositor_schedule_redraw();
 }

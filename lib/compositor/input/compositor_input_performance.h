@@ -4,6 +4,7 @@
 #include <stdint.h>
 #include <stdbool.h>
 #include "compositor_input.h"
+#include "compositor_utils.h"
 
 // 初始化输入性能统计模块
 int compositor_input_performance_init(void);

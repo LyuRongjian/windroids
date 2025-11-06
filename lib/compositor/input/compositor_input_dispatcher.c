@@ -32,7 +32,7 @@ int compositor_input_dispatcher_init(void) {
     g_current_second_start = get_current_time_ms();
     
     log_message(COMPOSITOR_LOG_DEBUG, "Input dispatcher module initialized");
-    return 0;
+    return COMPOSITOR_OK;
 }
 
 // 清理输入事件分发模块
@@ -69,7 +69,7 @@ int compositor_input_dispatcher_dispatch_event(const CompositorInputEvent* event
     update_event_stats();
     
     // 更新输入性能统计
-    compositor_input_performance_update_stats(event);
+    compositor_input_performance_update_stats(event->device_type, event->time);
     
     // 如果设置了事件处理器，调用它
     if (g_event_handler) {
@@ -84,8 +84,8 @@ int compositor_input_dispatcher_simulate_mouse_event(int x, int y, int button, b
     CompositorInputEvent event;
     memset(&event, 0, sizeof(event));
     
-    event.type = pressed ? COMPOSITOR_EVENT_MOUSE_BUTTON_DOWN : COMPOSITOR_EVENT_MOUSE_BUTTON_UP;
-    event.device_type = COMPOSITOR_DEVICE_TYPE_MOUSE;
+    event.type = pressed ? COMPOSITOR_INPUT_EVENT_MOUSE_BUTTON : COMPOSITOR_INPUT_EVENT_MOUSE_BUTTON;
+    event.device_type = COMPOSITOR_INPUT_DEVICE_TYPE_MOUSE;
     event.time = get_current_time_ms();
     
     event.mouse.x = x;
@@ -101,8 +101,8 @@ int compositor_input_dispatcher_simulate_keyboard_event(int key, bool pressed) {
     CompositorInputEvent event;
     memset(&event, 0, sizeof(event));
     
-    event.type = pressed ? COMPOSITOR_EVENT_KEY_DOWN : COMPOSITOR_EVENT_KEY_UP;
-    event.device_type = COMPOSITOR_DEVICE_TYPE_KEYBOARD;
+    event.type = pressed ? COMPOSITOR_INPUT_EVENT_KEYBOARD : COMPOSITOR_INPUT_EVENT_KEYBOARD;
+    event.device_type = COMPOSITOR_INPUT_DEVICE_TYPE_KEYBOARD;
     event.time = get_current_time_ms();
     
     event.keyboard.key = key;

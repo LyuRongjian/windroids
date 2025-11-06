@@ -5,7 +5,8 @@
 #include <stdint.h>
 #include "compositor.h" // 包含基础定义
 #include "compositor_window.h" // 包含窗口相关定义
-#include "compositor_input_types.h" // 包含输入类型定义
+#include "compositor_input_type.h" // 包含输入类型定义
+#include "compositor_utils.h" // 包含错误代码定义
 
 // 前向声明（如果需要）
 // struct CompositorState;
@@ -122,9 +123,13 @@ bool compositor_input_has_tilt_support(void);
 bool compositor_input_has_rotation_support(void);
 
 // 输入设备管理优化函数
-int compositor_input_set_device_priority(CompositorDeviceType type, int priority);
+int compositor_input_set_device_priority(CompositorInputDeviceType type, int priority);
 int compositor_input_set_adaptive_mode(bool enabled);
 int compositor_input_get_performance_stats(CompositorInputPerformanceStats* stats);
+
+// 事件处理函数
+void process_input_events(int timeout_ms);
+bool compositor_input_get_next_event(CompositorInputEvent* out_event, int timeout_ms);
 
 
 

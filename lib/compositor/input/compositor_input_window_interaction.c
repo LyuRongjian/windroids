@@ -16,7 +16,7 @@ static int64_t get_current_time_ms(void) {
 // 窗口交互初始化
 int compositor_window_interaction_init(void) {
     memset(&g_window_switch_state, 0, sizeof(g_window_switch_state));
-    return 0;
+    return COMPOSITOR_OK;
 }
 
 // 窗口交互清理

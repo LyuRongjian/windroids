@@ -4,6 +4,7 @@
 #include "compositor_input.h"
 #include "compositor_input_manager.h"
 #include "compositor_input_performance.h"
+#include "compositor_utils.h"
 
 #ifdef __cplusplus
 extern "C" {

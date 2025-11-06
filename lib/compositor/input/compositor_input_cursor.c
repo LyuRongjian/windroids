@@ -41,7 +41,7 @@ void compositor_cursor_set_state(void* state) {
 // 初始化鼠标光标系统
 int compositor_cursor_init(void) {
     if (g_cursor_state.initialized) {
-        return -1; // 已初始化错误
+        return COMPOSITOR_ERROR_ALREADY_EXISTS; // 已初始化错误
     }
     
     // 初始化光标结构
@@ -61,7 +61,7 @@ int compositor_cursor_init(void) {
     // 分配像素数据
     g_cursor_state.cursor.pixels = (uint32_t*)calloc(g_cursor_state.cursor.width * g_cursor_state.cursor.height, sizeof(uint32_t));
     if (!g_cursor_state.cursor.pixels) {
-        return -2; // 内存不足错误
+        return COMPOSITOR_ERROR_OUT_OF_MEMORY; // 内存不足错误
     }
     
     // 初始化其他状态
@@ -78,7 +78,7 @@ int compositor_cursor_init(void) {
     compositor_cursor_load_theme("default");
     
     g_cursor_state.initialized = true;
-    return 0; // 成功
+    return COMPOSITOR_OK; // 成功
 }
 
 // 清理鼠标光标系统
@@ -113,11 +113,11 @@ void compositor_cursor_cleanup(void) {
 // 设置光标类型
 int compositor_cursor_set_type(CompositorCursorType type) {
     if (!g_cursor_state.initialized) {
-        return -1; // 未初始化错误
+        return COMPOSITOR_ERROR_NOT_INITIALIZED; // 未初始化错误
     }
     
     if (type < COMPOSITOR_CURSOR_DEFAULT || type > COMPOSITOR_CURSOR_CUSTOM) {
-        return -2; // 无效参数错误
+        return COMPOSITOR_ERROR_INVALID_ARGS; // 无效参数错误
     }
     
     g_cursor_state.cursor.type = type;
@@ -130,7 +130,7 @@ int compositor_cursor_set_type(CompositorCursorType type) {
         int32_t size = g_cursor_state.theme_cursor_sizes[type];
         uint32_t* new_pixels = (uint32_t*)realloc(g_cursor_state.cursor.pixels, size * size * sizeof(uint32_t));
         if (!new_pixels) {
-            return -2; // 内存不足错误
+            return COMPOSITOR_ERROR_OUT_OF_MEMORY; // 内存不足错误
         }
         
         g_cursor_state.cursor.pixels = new_pixels;
@@ -143,12 +143,12 @@ int compositor_cursor_set_type(CompositorCursorType type) {
     }
     
     // 标记光标区域需要重绘
-    // 这里应该调用合成器的标记脏区域函数
-    // 例如: compositor_mark_dirty(g_cursor_state.cursor.x - g_cursor_state.cursor.hotspot_x, 
-    //                             g_cursor_state.cursor.y - g_cursor_state.cursor.hotspot_y,
-    //                             g_cursor_state.cursor.width, g_cursor_state.cursor.height);
+    compositor_mark_dirty_rect(
+        g_cursor_state.cursor.x - g_cursor_state.cursor.hotspot_x, 
+        g_cursor_state.cursor.y - g_cursor_state.cursor.hotspot_y,
+        g_cursor_state.cursor.width, g_cursor_state.cursor.height);
     
-    return 0; // 成功
+    return COMPOSITOR_OK; // 成功
 }
 
 // 获取光标类型
@@ -161,9 +161,9 @@ CompositorCursorType compositor_cursor_get_type(void) {
 }
 
 // 设置光标位置
-int compositor_cursor_set_position(int32_t x, int32_t y) {
+void compositor_cursor_set_position(int32_t x, int32_t y) {
     if (!g_cursor_state.initialized) {
-        return -1; // 未初始化错误
+        return;
     }
     
     // 边界检查
@@ -174,10 +174,10 @@ int compositor_cursor_set_position(int32_t x, int32_t y) {
     // if (y >= screen_height) y = screen_height - 1;
     
     // 标记旧位置需要重绘
-    // 这里应该调用合成器的标记脏区域函数
-    // compositor_mark_dirty(g_cursor_state.cursor.x - g_cursor_state.cursor.hotspot_x, 
-    //                      g_cursor_state.cursor.y - g_cursor_state.cursor.hotspot_y,
-    //                      g_cursor_state.cursor.width, g_cursor_state.cursor.height);
+    compositor_mark_dirty_rect(
+        g_cursor_state.cursor.x - g_cursor_state.cursor.hotspot_x, 
+        g_cursor_state.cursor.y - g_cursor_state.cursor.hotspot_y,
+        g_cursor_state.cursor.width, g_cursor_state.cursor.height);
     
     // 计算速度和加速度
     float current_time = get_current_time_ms() / 1000.0f;
@@ -203,12 +203,10 @@ int compositor_cursor_set_position(int32_t x, int32_t y) {
     }
     
     // 标记新位置需要重绘
-    // 这里应该调用合成器的标记脏区域函数
-    // compositor_mark_dirty(g_cursor_state.cursor.x - g_cursor_state.cursor.hotspot_x, 
-    //                      g_cursor_state.cursor.y - g_cursor_state.cursor.hotspot_y,
-    //                      g_cursor_state.cursor.width, g_cursor_state.cursor.height);
-    
-    return 0; // 成功
+    compositor_mark_dirty_rect(
+        g_cursor_state.cursor.x - g_cursor_state.cursor.hotspot_x, 
+        g_cursor_state.cursor.y - g_cursor_state.cursor.hotspot_y,
+        g_cursor_state.cursor.width, g_cursor_state.cursor.height);
 }
 
 // 获取光标位置
@@ -226,20 +224,20 @@ void compositor_cursor_get_position(int32_t* x, int32_t* y) {
 // 设置光标可见性
 int compositor_cursor_set_visibility(bool visible) {
     if (!g_cursor_state.initialized) {
-        return -1; // 未初始化错误
+        return COMPOSITOR_ERROR_NOT_INITIALIZED; // 未初始化错误
     }
     
     if (g_cursor_state.cursor.visible != visible) {
         g_cursor_state.cursor.visible = visible;
         
         // 标记光标区域需要重绘
-        // 这里应该调用合成器的标记脏区域函数
-        // compositor_mark_dirty(g_cursor_state.cursor.x - g_cursor_state.cursor.hotspot_x, 
-        //                      g_cursor_state.cursor.y - g_cursor_state.cursor.hotspot_y,
-        //                      g_cursor_state.cursor.width, g_cursor_state.cursor.height);
+        compositor_mark_dirty_rect(
+            g_cursor_state.cursor.x - g_cursor_state.cursor.hotspot_x, 
+            g_cursor_state.cursor.y - g_cursor_state.cursor.hotspot_y,
+            g_cursor_state.cursor.width, g_cursor_state.cursor.height);
     }
     
-    return 0; // 成功
+    return COMPOSITOR_OK; // 成功
 }
 
 // 获取光标可见性
@@ -254,25 +252,25 @@ bool compositor_cursor_is_visible(void) {
 // 设置光标热点
 int compositor_cursor_set_hotspot(int32_t x, int32_t y) {
     if (!g_cursor_state.initialized) {
-        return -1; // 未初始化错误
+        return COMPOSITOR_ERROR_NOT_INITIALIZED; // 未初始化错误
     }
     
     // 标记旧位置需要重绘
-    // 这里应该调用合成器的标记脏区域函数
-    // compositor_mark_dirty(g_cursor_state.cursor.x - g_cursor_state.cursor.hotspot_x, 
-    //                      g_cursor_state.cursor.y - g_cursor_state.cursor.hotspot_y,
-    //                      g_cursor_state.cursor.width, g_cursor_state.cursor.height);
+    compositor_mark_dirty_rect(
+        g_cursor_state.cursor.x - g_cursor_state.cursor.hotspot_x, 
+        g_cursor_state.cursor.y - g_cursor_state.cursor.hotspot_y,
+        g_cursor_state.cursor.width, g_cursor_state.cursor.height);
     
     g_cursor_state.cursor.hotspot_x = x;
     g_cursor_state.cursor.hotspot_y = y;
     
     // 标记新位置需要重绘
-    // 这里应该调用合成器的标记脏区域函数
-    // compositor_mark_dirty(g_cursor_state.cursor.x - g_cursor_state.cursor.hotspot_x, 
-    //                      g_cursor_state.cursor.y - g_cursor_state.cursor.hotspot_y,
-    //                      g_cursor_state.cursor.width, g_cursor_state.cursor.height);
+    compositor_mark_dirty_rect(
+        g_cursor_state.cursor.x - g_cursor_state.cursor.hotspot_x, 
+        g_cursor_state.cursor.y - g_cursor_state.cursor.hotspot_y,
+        g_cursor_state.cursor.width, g_cursor_state.cursor.height);
     
-    return 0; // 成功
+    return COMPOSITOR_OK; // 成功
 }
 
 // 获取光标热点
@@ -290,11 +288,11 @@ void compositor_cursor_get_hotspot(int32_t* x, int32_t* y) {
 // 设置自定义数据
 int compositor_cursor_set_custom_data(void* data) {
     if (!g_cursor_state.initialized) {
-        return -1; // 未初始化错误
+        return COMPOSITOR_ERROR_NOT_INITIALIZED; // 未初始化错误
     }
     
     g_cursor_state.cursor.custom_data = data;
-    return 0; // 成功
+    return COMPOSITOR_OK; // 成功
 }
 
 // 获取自定义数据
@@ -309,7 +307,7 @@ void* compositor_cursor_get_custom_data(void) {
 // 设置动画状态
 int compositor_cursor_set_animated(bool animated) {
     if (!g_cursor_state.initialized) {
-        return -1; // 未初始化错误
+        return COMPOSITOR_ERROR_NOT_INITIALIZED; // 未初始化错误
     }
     
     g_cursor_state.cursor.animated = animated;
@@ -317,7 +315,7 @@ int compositor_cursor_set_animated(bool animated) {
         g_cursor_state.cursor.animation_time = 0.0f;
     }
     
-    return 0; // 成功
+    return COMPOSITOR_OK; // 成功
 }
 
 // 获取动画状态
@@ -332,36 +330,36 @@ bool compositor_cursor_is_animated(void) {
 // 设置光标大小
 int compositor_cursor_set_size(int32_t width, int32_t height) {
     if (!g_cursor_state.initialized) {
-        return -1; // 未初始化错误
+        return COMPOSITOR_ERROR_NOT_INITIALIZED; // 未初始化错误
     }
     
     if (width <= 0 || height <= 0) {
-        return -2; // 无效参数错误
+        return COMPOSITOR_ERROR_INVALID_ARGS; // 无效参数错误
     }
+    
+    // 标记旧位置需要重绘
+    compositor_mark_dirty_rect(
+        g_cursor_state.cursor.x - g_cursor_state.cursor.hotspot_x, 
+        g_cursor_state.cursor.y - g_cursor_state.cursor.hotspot_y,
+        g_cursor_state.cursor.width, g_cursor_state.cursor.height);
     
     // 重新分配像素数据
     uint32_t* new_pixels = (uint32_t*)realloc(g_cursor_state.cursor.pixels, width * height * sizeof(uint32_t));
     if (!new_pixels) {
-        return -2; // 内存不足错误
+        return COMPOSITOR_ERROR_OUT_OF_MEMORY; // 内存不足错误
     }
-    
-    // 标记旧位置需要重绘
-    // 这里应该调用合成器的标记脏区域函数
-    // compositor_mark_dirty(g_cursor_state.cursor.x - g_cursor_state.cursor.hotspot_x, 
-    //                      g_cursor_state.cursor.y - g_cursor_state.cursor.hotspot_y,
-    //                      g_cursor_state.cursor.width, g_cursor_state.cursor.height);
     
     g_cursor_state.cursor.pixels = new_pixels;
     g_cursor_state.cursor.width = width;
     g_cursor_state.cursor.height = height;
     
     // 标记新位置需要重绘
-    // 这里应该调用合成器的标记脏区域函数
-    // compositor_mark_dirty(g_cursor_state.cursor.x - g_cursor_state.cursor.hotspot_x, 
-    //                      g_cursor_state.cursor.y - g_cursor_state.cursor.hotspot_y,
-    //                      g_cursor_state.cursor.width, g_cursor_state.cursor.height);
+    compositor_mark_dirty_rect(
+        g_cursor_state.cursor.x - g_cursor_state.cursor.hotspot_x, 
+        g_cursor_state.cursor.y - g_cursor_state.cursor.hotspot_y,
+        g_cursor_state.cursor.width, g_cursor_state.cursor.height);
     
-    return 0; // 成功
+    return COMPOSITOR_OK; // 成功
 }
 
 // 获取光标大小
@@ -379,11 +377,11 @@ void compositor_cursor_get_size(int32_t* width, int32_t* height) {
 // 设置光标像素数据
 int compositor_cursor_set_pixels(const uint32_t* pixels) {
     if (!g_cursor_state.initialized) {
-        return -1; // 未初始化错误
+        return COMPOSITOR_ERROR_NOT_INITIALIZED; // 未初始化错误
     }
     
     if (!pixels) {
-        return -2; // 无效参数错误
+        return COMPOSITOR_ERROR_INVALID_ARGS; // 无效参数错误
     }
     
     // 复制像素数据
@@ -391,12 +389,12 @@ int compositor_cursor_set_pixels(const uint32_t* pixels) {
            g_cursor_state.cursor.width * g_cursor_state.cursor.height * sizeof(uint32_t));
     
     // 标记光标区域需要重绘
-    // 这里应该调用合成器的标记脏区域函数
-    // compositor_mark_dirty(g_cursor_state.cursor.x - g_cursor_state.cursor.hotspot_x, 
-    //                      g_cursor_state.cursor.y - g_cursor_state.cursor.hotspot_y,
-    //                      g_cursor_state.cursor.width, g_cursor_state.cursor.height);
+    compositor_mark_dirty_rect(
+        g_cursor_state.cursor.x - g_cursor_state.cursor.hotspot_x, 
+        g_cursor_state.cursor.y - g_cursor_state.cursor.hotspot_y,
+        g_cursor_state.cursor.width, g_cursor_state.cursor.height);
     
-    return 0; // 成功
+    return COMPOSITOR_OK; // 成功
 }
 
 // 获取光标像素数据
@@ -419,10 +417,10 @@ int compositor_cursor_update(float delta_time) {
         g_cursor_state.cursor.animation_time += delta_time;
         
         // 标记光标区域需要重绘
-        // 这里应该调用合成器的标记脏区域函数
-        // compositor_mark_dirty(g_cursor_state.cursor.x - g_cursor_state.cursor.hotspot_x, 
-        //                      g_cursor_state.cursor.y - g_cursor_state.cursor.hotspot_y,
-        //                      g_cursor_state.cursor.width, g_cursor_state.cursor.height);
+        compositor_mark_dirty_rect(
+            g_cursor_state.cursor.x - g_cursor_state.cursor.hotspot_x, 
+            g_cursor_state.cursor.y - g_cursor_state.cursor.hotspot_y,
+            g_cursor_state.cursor.width, g_cursor_state.cursor.height);
     }
     
     // 更新自动隐藏计时器
@@ -438,10 +436,10 @@ int compositor_cursor_update(float delta_time) {
             g_cursor_state.cursor.visible = false;
             
             // 标记光标区域需要重绘
-            // 这里应该调用合成器的标记脏区域函数
-            // compositor_mark_dirty(g_cursor_state.cursor.x - g_cursor_state.cursor.hotspot_x, 
-            //                      g_cursor_state.cursor.y - g_cursor_state.cursor.hotspot_y,
-            //                      g_cursor_state.cursor.width, g_cursor_state.cursor.height);
+            compositor_mark_dirty_rect(
+                g_cursor_state.cursor.x - g_cursor_state.cursor.hotspot_x, 
+                g_cursor_state.cursor.y - g_cursor_state.cursor.hotspot_y,
+                g_cursor_state.cursor.width, g_cursor_state.cursor.height);
         }
     }
     

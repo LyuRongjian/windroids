@@ -5,7 +5,7 @@
 
 // 输入模拟初始化
 int compositor_input_simulation_init(void) {
-    return 0;
+    return COMPOSITOR_OK;
 }
 
 // 输入模拟清理

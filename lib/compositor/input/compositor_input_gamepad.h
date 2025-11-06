@@ -8,6 +8,7 @@
 
 #include "compositor.h"
 #include "compositor_input_device.h"
+#include "compositor_utils.h"
 #include <stdbool.h>
 
 // 游戏手柄配置结构体
