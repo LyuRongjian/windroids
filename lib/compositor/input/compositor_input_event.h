@@ -7,6 +7,7 @@
 #define COMPOSITOR_INPUT_EVENT_H
 
 #include "compositor.h"
+#include "compositor_input_types.h"
 #include <stdbool.h>
 
 // 事件处理函数声明
