@@ -1,317 +1,280 @@
-# WinDroids Compositor Library
+# Compositor Library
 
-## 概述
+这是一个为Android GameActivity优化的高性能wlroots headless后端合成器库，支持Xwayland和Vulkan渲染。
 
-这是一个基于 wlroots + Xwayland + Vulkan 的合成器库，专为 Android GameActivity 设计，提供了在 Android 平台上运行 Linux 和 Windows 图形应用的能力。
+## 功能特性
 
-## 核心功能
+- 基于wlroots的headless后端
+- 集成Xwayland支持
+- Vulkan硬件加速渲染
+- 简化的API接口，专为GameActivity设计
+- 高性能，最小化资源使用
+- 模块化设计，便于维护和扩展
+- **性能优化功能**：自适应帧率/质量控制、热节流管理
+- **游戏模式支持**：游戏特定优化、输入延迟优化
+- **监控分析功能**：性能数据收集、报告生成
+- **配置管理系统**：灵活的配置选项和持久化
 
-- **初始化 Wayland compositor**：基于 wlroots headless 后端
-- **启动 Xwayland 子进程**：支持运行 X11 应用
-- **自定义 Vulkan 渲染器**：高效合成所有窗口
-- **ANativeWindow 集成**：将最终帧输出到 Android 窗口
-- **输入事件处理**：支持触摸、键盘等输入事件
+## 使用方法
 
-## 架构设计
+### 基本使用
 
-```
-GameActivity (Android) ←→ compositor.h (C ABI) ←→ compositor.c (实现)
-                                       ↓
-                   ┌──────────────────┼──────────────────┐
-                   ↓                  ↓                  ↓
-            wlroots (headless)   Xwayland (子进程)  Vulkan 渲染器
-                   ↓                  ↓                  ↓
-                   └──────────────────┼──────────────────┘
-                                      ↓
-                               ANativeWindow (输出)
-```
-
-## 编译说明
-
-### 依赖项
-
-- Android NDK (API 29 或更高)
-- Meson + Ninja (构建系统)
-- wlroots 0.18.3
-- Xwayland 21.1.13
-- Vulkan SDK (运行时)
-
-### 编译步骤
-
-1. 确保已安装所有依赖
-2. 运行主构建脚本：
-
-```bash
-cd /home/lrj/windroids
-./windroids-build.sh
-```
-
-3. 构建产物将位于 `output/` 目录：
-   - `output/lib/libcompositor.a` (静态库)
-   - `output/lib/libcompositor.so` (共享库)
-   - `output/include/compositor.h` (头文件)
-   - `output/bin/xwayland` (Xwayland 可执行文件)
-
-## API 使用示例
-
-以下是在 GameActivity 的 native 代码中使用此库的示例：
+1. 在GameActivity的onCreate中初始化合成器：
 
 ```c
-#include <compositor.h>
-#include <android/native_activity.h>
-#include <android/native_window_jni.h>
+#include "compositor.h"
+#include "compositor_config.h"
 
-// 全局合成器引用
-ANativeWindow* g_native_window = NULL;
+int32_t width = ANativeWindow_getWidth(window);
+int32_t height = ANativeWindow_getHeight(window);
 
-// GameActivity 回调
-static void on_window_init(ANativeActivity* activity) {
-    g_native_window = activity->window;
-    if (!g_native_window) {
-        return;
-    }
-    
-    // 获取窗口尺寸
-    int width = ANativeWindow_getWidth(g_native_window);
-    int height = ANativeWindow_getHeight(g_native_window);
-    
-    // 初始化合成器
-    if (compositor_init(g_native_window, width, height) != 0) {
+// 使用默认配置初始化
+if (compositor_init(window, width, height) != 0) {
+    // 处理初始化失败
+}
+
+// 或者使用自定义配置
+struct compositor_config config = default_compositor_config;
+config.adaptive_framerate_enabled = true;
+config.game_mode_enabled = true;
+if (compositor_init_with_config(window, width, height, &config) != 0) {
+    // 处理初始化失败
+}
+```
+
+2. 在渲染循环中调用compositor_step：
+
+```c
+while (running) {
+    if (compositor_step() != 0) {
         // 处理错误
-        return;
     }
 }
-
-// 渲染循环
-static void render_frame() {
-    // 执行合成器单步
-    compositor_step();
-}
-
-// 触摸事件处理
-static int32_t on_touch_event(ANativeActivity* activity, AInputEvent* event) {
-    if (!g_native_window) {
-        return 0;
-    }
-    
-    int32_t action = AMotionEvent_getAction(event);
-    int pointer_idx = (action & AMOTION_EVENT_ACTION_POINTER_INDEX_MASK) >> AMOTION_EVENT_ACTION_POINTER_INDEX_SHIFT;
-    float x = AMotionEvent_getX(event, pointer_idx);
-    float y = AMotionEvent_getY(event, pointer_idx);
-    int state = (action & AMOTION_EVENT_ACTION_MASK) == AMOTION_EVENT_ACTION_DOWN ? 1 : 0;
-    
-    // 注入触摸事件到合成器
-    compositor_handle_input(0, (int)x, (int)y, 0, state);
-    
-    return 1;
-}
-
-// 清理资源
-static void on_destroy(ANativeActivity* activity) {
-    compositor_destroy();
-}
-
-// 设置 GameActivity 回调
-void ANativeActivity_onCreate(ANativeActivity* activity, void* savedState, size_t savedStateSize) {
-    activity->callbacks->onWindowInit = on_window_init;
-    activity->callbacks->onDestroy = on_destroy;
-    activity->callbacks->onInputEvent = on_touch_event;
-    
-    // 启动渲染线程
-    // ...
-}
 ```
 
-## 集成到 Android 项目
+3. 注入输入事件：
 
-### 步骤 1: 复制库文件
+```c
+// 触摸事件
+compositor_handle_input(0, x, y, 0, state); // state: 1=按下, 0=释放
 
-将编译产物复制到 Android 项目的 `app/src/main/jniLibs/arm64-v8a/` 目录：
-
-```
-app/src/main/jniLibs/arm64-v8a/
-├── libcompositor.so
-└── xwayland
+// 键盘事件
+compositor_handle_input(1, 0, 0, keycode, state); // state: 1=按下, 0=释放
 ```
 
-### 步骤 2: 配置 CMakeLists.txt
+4. 在GameActivity销毁时清理资源：
 
-```cmake
-cmake_minimum_required(VERSION 3.18.1)
-
-project("windroids_example")
-
-# 添加合成器库
-add_library(compositor SHARED IMPORTED)
-set_target_properties(compositor PROPERTIES
-    IMPORTED_LOCATION "${CMAKE_SOURCE_DIR}/src/main/jniLibs/arm64-v8a/libcompositor.so"
-    INTERFACE_INCLUDE_DIRECTORIES "${CMAKE_SOURCE_DIR}/src/main/cpp/include"
-)
-
-# 添加应用代码
-add_library(native-lib SHARED
-    src/main/cpp/native-lib.cpp
-)
-
-# 链接库
-target_link_libraries(native-lib
-    compositor
-    android
-    log
-    vulkan
-)
+```c
+compositor_destroy();
 ```
 
-### 步骤 3: 配置 build.gradle
+### 高级功能使用
 
-```groovy
-android {
-    // ...
-    defaultConfig {
-        // ...
-        externalNativeBuild {
-            cmake {
-                arguments "-DANDROID_STL=c++_shared"
-            }
-        }
-        ndk {
-            abiFilters 'arm64-v8a'
-        }
-    }
-    // ...
-}
+```c
+// 启用性能优化
+compositor_perf_opt_enable();
+compositor_perf_opt_set_adaptive_framerate(true);
+compositor_perf_opt_set_adaptive_quality(true);
+compositor_perf_opt_set_thermal_throttling(true);
+
+// 启用游戏模式
+compositor_game_mode_enable(GAME_MODE_PERFORMANCE);
+compositor_game_set_input_optimization(true);
+compositor_game_set_priority_boost(true);
+
+// 启用监控
+compositor_monitor_enable(1000); // 每秒采样一次
+compositor_monitor_generate_report("/data/local/tmp/performance_report.txt");
+
+// 配置管理
+struct compositor_config config;
+compositor_config_load("/data/local/tmp/compositor.conf", &config);
+config.window_animations_enabled = false; // 禁用窗口动画
+config.window_effects_enabled = false;    // 禁用窗口特效
+compositor_config_save("/data/local/tmp/compositor.conf", &config);
 ```
+
+## 构建依赖
+
+- wlroots (headless后端)
+- Vulkan
+- Wayland协议库
+- Android NDK
+
+## 性能优化
+
+本库专为性能优化，移除了以下非必要功能：
+
+- 美观相关的UI效果和窗口动画
+- 复杂的窗口管理功能（简化为基本窗口类型）
+- 详细的性能统计和日志（可选启用）
+- 多线程支持（单线程模型）
+- 高级输入处理（仅保留基本鼠标事件）
+- 窗口特效和过渡动画
+- 复杂的Z-order管理（简化为基本层级）
+
+## 模块结构
+
+本库采用模块化设计，每个模块负责特定功能：
+
+### 核心模块
+
+- **compositor.c/h**: 主合成器模块，提供API接口和模块协调
+- **compositor_input.c/h**: 输入事件处理模块
+- **compositor_window.c/h**: 简化的窗口管理模块
+- **compositor_render.c/h**: 优化的渲染模块
+- **compositor_resource.c/h**: 资源管理模块
+- **compositor_vulkan.c/h**: Vulkan渲染模块
+
+### 优化模块
+
+- **compositor_perf_opt.c/h**: 性能优化模块（自适应帧率/质量控制、热节流）
+- **compositor_game.c/h**: 游戏模式模块（游戏特定优化、输入延迟优化）
+- **compositor_monitor.c/h**: 监控分析模块（性能数据收集、报告生成）
+- **compositor_config.c/h**: 配置管理模块（配置加载/保存、默认配置）
+
+### 模块调用关系
+
+```
+compositor.c (主模块)
+├── compositor_input.c (输入处理)
+├── compositor_window.c (窗口管理)
+├── compositor_render.c (渲染优化)
+├── compositor_resource.c (资源管理)
+├── compositor_vulkan.c (Vulkan渲染)
+├── compositor_perf_opt.c (性能优化)
+├── compositor_game.c (游戏模式)
+├── compositor_monitor.c (监控分析)
+└── compositor_config.c (配置管理)
+```
+
+### 模块职责
+
+1. **compositor.c**: 初始化各模块，协调模块间交互，提供外部API
+2. **compositor_input.c**: 处理触摸、鼠标、键盘等输入事件
+3. **compositor_window.c**: 管理窗口创建、销毁、属性设置和焦点管理（简化版）
+4. **compositor_render.c**: 优化渲染流程，管理渲染层和脏区域（无特效）
+5. **compositor_resource.c**: 管理资源加载、卸载和内存使用
+6. **compositor_vulkan.c**: 封装Vulkan API，提供渲染接口
+7. **compositor_perf_opt.c**: 提供自适应帧率/质量控制、热节流管理
+8. **compositor_game.c**: 提供游戏模式、输入优化、优先级提升
+9. **compositor_monitor.c**: 提供性能监控、数据收集、报告生成
+10. **compositor_config.c**: 提供配置管理、默认配置、持久化存储
+
+### 代码限制
+
+- 单个文件有效代码行数不超过1000行
+- 模块间依赖清晰，接口明确
+- 避免循环依赖
+
+## 性能优化功能
+
+### 自适应帧率控制
+- 根据系统负载动态调整帧率
+- 在性能不足时降低帧率，在性能充足时提高帧率
+- 可配置目标帧率和调整策略
+
+### 自适应质量控制
+- 根据性能情况动态调整渲染质量
+- 在性能不足时降低渲染质量，在性能充足时提高渲染质量
+- 可配置质量级别和调整策略
+
+### 热节流管理
+- 监控系统温度，防止过热
+- 在温度过高时降低性能，保护硬件
+- 可配置温度阈值和节流策略
+
+### 脏区域优化
+- 只重绘屏幕上发生变化的区域
+- 减少不必要的渲染，提高性能
+- 自动合并相邻脏区域
+
+## 游戏模式功能
+
+### 游戏模式支持
+- 为游戏应用优化资源分配
+- 提供多种游戏模式（性能模式、平衡模式、质量模式）
+- 可根据应用类型自动选择合适的模式
+
+### 输入优化
+- 减少输入延迟，提高响应速度
+- 优化触摸事件处理路径
+- 提供输入预测和插值
+
+### 优先级提升
+- 提高游戏应用的系统优先级
+- 确保游戏获得更多CPU和GPU资源
+- 可配置优先级级别
+
+## 监控分析功能
+
+### 性能数据收集
+- 收集CPU、GPU、内存使用情况
+- 记录帧率、帧时间等渲染指标
+- 监控温度和功耗
+
+### 报告生成
+- 生成详细的性能分析报告
+- 支持多种输出格式（文本、JSON、CSV）
+- 可配置报告内容和频率
+
+### 实时监控
+- 提供实时性能数据
+- 支持性能阈值告警
+- 可通过API查询当前性能状态
+
+## 配置管理
+
+### 配置系统
+- 提供完整的配置管理功能
+- 支持配置文件加载和保存
+- 提供默认配置和配置重置
+
+### 配置选项
+- 性能优化相关配置
+- 游戏模式相关配置
+- 监控分析相关配置
+- 渲染和窗口管理配置
 
 ## 注意事项
 
-1. **权限**：确保应用具有必要的权限，如 `INTERNET` 和 `READ_EXTERNAL_STORAGE`
-2. **Xwayland 路径**：compositor.c 中的 Xwayland 路径需要根据实际安装位置修改
-3. **线程安全**：所有合成器操作必须在 GameActivity 的渲染线程中执行
-4. **性能优化**：可以根据需要调整 Vulkan 的配置，如呈现模式、图像格式等
+- 本库设计为在GameActivity的渲染线程中运行
+- 不支持多线程访问
+- 简化的输入处理，仅支持基本的鼠标和键盘事件
+- 各模块按需初始化，错误处理完善
+- 默认禁用窗口动画和特效，提高性能
+- 所有优化功能都有开关控制，可根据需要启用
 
-## 故障排除
+## 开发优先级
 
-1. **Vulkan 初始化失败**：检查设备是否支持 Vulkan，以及是否正确加载了 libvulkan.so
-2. **Xwayland 启动失败**：确保 Xwayland 可执行文件具有执行权限，并且路径正确
-3. **窗口不显示**：检查 ANativeWindow 是否正确传递，以及尺寸设置是否合理
-4. **性能问题**：考虑调整 Vulkan 的设置，如使用更高效的呈现模式或减少不必要的渲染操作
+1. **性能优化功能**（已完成）：
+   - 自适应帧率控制
+   - 自适应质量控制
+   - 热节流管理
+   - 脏区域优化
 
-## 未来优化方向
+2. **游戏特定功能**（已完成）：
+   - 游戏模式支持
+   - 输入优化
+   - 优先级提升
 
-1. 添加多窗口管理支持
-2. 实现硬件加速的窗口合成
-3. 支持更多输入设备类型
-4. 添加 OpenGL ES 作为备选渲染后端
-5. 优化内存使用和渲染性能
+3. **监控和分析功能**（已完成）：
+   - 性能数据收集
+   - 报告生成
+   - 实时监控
 
+## 性能考虑
 
-## 优化建议
+- 所有新功能都有开关控制，默认关闭
+- 使用条件编译确保调试代码不影响发布版本性能
+- 实现性能预算系统，确保总资源使用不超过限制
+- 窗口动画和特效默认禁用，可根据需要启用
+- 简化Z-order管理，减少计算开销
 
-### 1. 函数接口与声明优化
+## Android集成
 
-- **函数声明完整性**：已修复 `is_point_in_xwayland_surface` 函数的静态声明缺失问题，但其他静态函数如 `is_point_in_wayland_window`、`is_point_in_decoration` 等也应该在头文件中添加适当的静态声明，以提高代码的一致性。
-
-- **函数参数一致性**：检查 `compositor_handle_input` 函数的文档注释，确保所有事件类型常量名称与实际代码使用的 `COMPOSITOR_INPUT_*` 格式一致。
-
-### 2. Wayland 窗口功能实现
-
-- **功能完善**：代码中有多处标记为 `TODO: 实现Wayland窗口XXX逻辑` 的注释，需要完成这些功能实现，包括：
-  - Wayland窗口焦点设置
-  - Wayland窗口激活逻辑
-  - Wayland窗口关闭逻辑
-  - Wayland窗口大小调整逻辑
-  - Wayland窗口移动逻辑
-  - Wayland窗口信息获取
-  - Wayland窗口最小化/最大化/还原
-  - Wayland窗口透明度设置
-
-### 3. 窗口状态管理优化
-
-- **状态保存**：当前窗口最小化和还原实现较为简单，使用了将窗口移出屏幕的方式。建议实现更完善的窗口状态管理，使用结构体存储窗口的原始位置和大小，以便更精确地还原窗口状态。
-
-```c
-// 建议添加窗口状态结构体
-typedef struct {
-    int saved_x, saved_y;
-    int saved_width, saved_height;
-    bool is_minimized;
-    bool is_maximized;
-    float opacity;
-    // 其他窗口状态...
-} WindowState;
-```
-
-### 4. 输入事件处理改进
-
-- **事件转发逻辑**：实现所有标记为 `TODO: 实现具体的事件转发逻辑` 的部分，确保鼠标和键盘事件能够正确转发到相应的窗口。
-
-- **鼠标光标管理**：添加鼠标悬停效果和光标形状变化的实现。
-
-### 5. 错误处理增强
-
-- **错误码定义**：虽然已添加 `COMPOSITOR_ERROR_INVALID_PARAMETER` 错误码，但建议为所有功能模块定义更具体的错误码，以提高错误诊断的准确性。
-
-- **统一错误报告**：确保所有错误处理路径都设置了适当的错误代码和错误消息。
-
-### 6. 代码可维护性提升
-
-- **减少重复代码**：在窗口管理相关函数中存在大量重复逻辑，特别是在遍历窗口列表方面。建议提取公共函数，如：
-
-```c
-// 建议添加查找窗口的公共函数
-struct wlr_xwayland_surface* find_xwayland_surface_by_title(const char* window_title) {
-    struct wlr_xwayland_surface *surface;
-    wl_list_for_each(surface, &compositor_state.xwayland_surfaces, link) {
-        if (surface->title && strcmp(surface->title, window_title) == 0) {
-            return surface;
-        }
-    }
-    return NULL;
-}
-```
-
-- **参数验证集中化**：在所有公共API函数开始处添加参数验证，并将常见的验证逻辑提取为辅助函数。
-
-### 7. 性能优化
-
-- **渲染优化**：进一步优化 `render_frame` 函数，确保只在必要时进行重绘。
-
-- **链表操作优化**：在处理大量窗口时，优化窗口链表的搜索和排序操作，考虑使用更高效的数据结构。
-
-### 8. 资源管理
-
-- **内存泄漏检查**：确保在所有错误处理路径上都正确释放分配的内存。
-
-- **引用计数**：考虑为窗口和表面添加引用计数机制，以确保资源不会被过早释放。
-
-### 9. 功能拓展
-
-- **窗口边缘吸附**：在窗口移动时实现边缘吸附功能，提升用户体验。
-
-- **多显示器支持**：增强多显示器支持，确保窗口可以正确地在不同显示器之间移动和排列。
-
-## 总结
-
-compositor.c 和 compositor.h 文件总体质量良好，没有明显的语法错误。主要的优化方向是完成未实现的 Wayland 窗口功能、改进窗口状态管理、完善错误处理机制以及提高代码的可维护性和性能。这些优化将使代码更加健壮，功能更加完整，用户体验更加流畅。
-
-## 优化建议
-### 1. 类型安全改进 ：
-   
-   - 在多个函数中创建临时 WindowInfo 结构体替代直接类型转换，提高了代码的类型安全性。
-   - 建议将全局指针 g_compositor_state 的使用减少，改为函数参数传递，提高代码的可测试性。
-### 2. 错误处理优化 ：
-   
-   - 为透明度设置添加了范围检查和日志警告，使用 clamp_float 函数确保透明度值在有效范围内。
-   - 建议为所有内存分配添加失败检查，并在函数返回前清理已分配的资源，防止内存泄漏。
-### 3. 代码结构优化 ：
-   
-   - WaylandWindow 和 WaylandWindowState 结构体定义存在重复，建议统一使用一种结构。
-   - 函数 compositor_maximize_window 、 compositor_restore_window 和 compositor_set_window_opacity 中有重复的窗口查找逻辑，建议提取为公共函数。
-### 4. 性能优化 ：
-   
-   - 在 `compositor_vulkan.c` 的 render_windows 函数中，建议按Z顺序排序窗口后再渲染，提高渲染效率。
-   - 建议实现窗口重绘区域的精确计算，而不是标记整个屏幕为脏区域，减少不必要的重绘。
-### 5. API一致性 ：
-   
-   - 函数 compositor_input_set_state 已正确使用 CompositorState* 类型，建议确保所有类似的函数也使用明确的类型而非 void* 。
-   - 建议为所有函数添加更详细的文档注释，特别是关于参数和返回值的说明。
+- 确保与Android生命周期正确集成
+- 处理配置更改和内存不足情况
+- 优化与Android系统的交互，减少开销
+- 提供Android特定的性能优化选项
+- 支持Android电源管理和热管理API

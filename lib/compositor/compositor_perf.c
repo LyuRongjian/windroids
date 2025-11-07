@@ -1,295 +1,215 @@
-/*
- * WinDroids Compositor - Performance Monitoring
- * Implementation of advanced performance tracking and analysis
- */
-
 #include "compositor_perf.h"
-#include "compositor_utils.h"
-#include "compositor_render.h"
-#include "compositor_dirty.h"
 #include <stdlib.h>
 #include <string.h>
-#include <math.h>
+#include <time.h>
+#include <android/log.h>
 
-// 全局状态引用
-static CompositorState* g_state = NULL;
+#define LOG_TAG "PerfMonitor"
+#define LOGI(...) __android_log_print(ANDROID_LOG_INFO, LOG_TAG, __VA_ARGS__)
+#define LOGE(...) __android_log_print(ANDROID_LOG_ERROR, LOG_TAG, __VA_ARGS__)
+#define LOGW(...) __android_log_print(ANDROID_LOG_WARN, LOG_TAG, __VA_ARGS__)
 
-// 性能统计数据
-static CompositorPerformanceStats g_perf_stats;
+// 全局性能监控器状态
+static struct perf_monitor g_monitor = {0};
+static struct profiler g_profiler = {0};
+static struct perf_thresholds g_thresholds = {
+    .min_fps = 30.0f,
+    .max_frame_time = 33.3f, // 30 FPS
+    .max_memory_usage = 512 * 1024 * 1024, // 512MB
+    .max_cpu_usage = 80.0f, // 80%
+    .max_gpu_usage = 80.0f  // 80%
+};
+static perf_warning_callback_t g_warning_callback = NULL;
+static void* g_warning_user_data = NULL;
 
-// 性能测量时间戳
-static int64_t g_frame_start_time = 0;
-static int64_t g_render_start_time = 0;
-static int64_t g_input_start_time = 0;
+// 内部函数声明
+static uint64_t perf_get_time(void);
+static void perf_update_counters(void);
 
-// 配置标志
-static bool g_perf_enabled = true;
-
-// 设置合成器状态引用（内部使用）
-void compositor_perf_set_state(CompositorState* state) {
-    g_state = state;
-}
-
-// 初始化性能监控系统
-int compositor_perf_init(void) {
-    if (!g_state) {
-        set_error(COMPOSITOR_ERROR_NOT_INITIALIZED, "Compositor not initialized");
-        return COMPOSITOR_ERROR_NOT_INITIALIZED;
+// 初始化性能监控器
+int perf_monitor_init(void) {
+    if (g_monitor.enabled) {
+        LOGE("Performance monitor already initialized");
+        return -1;
     }
     
-    // 初始化性能统计数据
-    memset(&g_perf_stats, 0, sizeof(CompositorPerformanceStats));
+    memset(&g_monitor, 0, sizeof(g_monitor));
+    g_monitor.enabled = true;
+    g_monitor.update_interval = 60; // 每60帧更新一次
+    g_monitor.min_frame_time = 1000.0f; // 初始最小值
+    g_monitor.last_frame_time = perf_get_time();
     
-    // 设置初始最小值为较大值
-    g_perf_stats.min_fps = 1000.0f;
-    g_perf_stats.min_frame_time = 1000.0f;
-    g_perf_stats.min_render_time = 1000.0f;
-    g_perf_stats.min_input_time = 1000.0f;
-    
-    // 设置警告阈值
-    g_perf_stats.low_fps_warning = false;
-    g_perf_stats.high_memory_warning = false;
-    g_perf_stats.high_cpu_warning = false;
-    
-    g_perf_enabled = g_state->config.enable_performance_monitoring;
-    
-    log_message(COMPOSITOR_LOG_INFO, "Performance monitoring system initialized");
-    return COMPOSITOR_OK;
+    LOGI("Performance monitor initialized");
+    return 0;
 }
 
-// 清理性能监控系统
-void compositor_perf_cleanup(void) {
-    if (g_state) {
-        log_message(COMPOSITOR_LOG_INFO, "Performance monitoring system cleaned up");
-    }
-}
-
-// 开始帧性能测量
-void compositor_perf_start_frame(void) {
-    if (!g_perf_enabled || !g_state) return;
-    
-    g_frame_start_time = get_current_time_ms();
-}
-
-// 结束帧性能测量
-void compositor_perf_end_frame(void) {
-    if (!g_perf_enabled || !g_state || g_frame_start_time == 0) return;
-    
-    int64_t current_time = get_current_time_ms();
-    float frame_time = (float)(current_time - g_frame_start_time);
-    
-    // 更新帧时间统计
-    g_perf_stats.current_frame_time = frame_time;
-    g_perf_stats.min_frame_time = MIN(g_perf_stats.min_frame_time, frame_time);
-    g_perf_stats.max_frame_time = MAX(g_perf_stats.max_frame_time, frame_time);
-    
-    // 更新FPS
-    if (frame_time > 0) {
-        float fps = 1000.0f / frame_time;
-        g_perf_stats.current_fps = fps;
-        g_perf_stats.min_fps = MIN(g_perf_stats.min_fps, fps);
-        g_perf_stats.max_fps = MAX(g_perf_stats.max_fps, fps);
-    }
-    
-    // 重置开始时间
-    g_frame_start_time = 0;
-}
-
-// 开始渲染阶段性能测量
-void compositor_perf_start_render(void) {
-    if (!g_perf_enabled || !g_state) return;
-    
-    g_render_start_time = get_current_time_ms();
-}
-
-// 结束渲染阶段性能测量
-void compositor_perf_end_render(void) {
-    if (!g_perf_enabled || !g_state || g_render_start_time == 0) return;
-    
-    float render_time = (float)(get_current_time_ms() - g_render_start_time);
-    
-    // 更新渲染时间统计
-    g_perf_stats.current_render_time = render_time;
-    g_perf_stats.min_render_time = MIN(g_perf_stats.min_render_time, render_time);
-    g_perf_stats.max_render_time = MAX(g_perf_stats.max_render_time, render_time);
-    
-    // 重置开始时间
-    g_render_start_time = 0;
-}
-
-// 开始输入处理阶段性能测量
-void compositor_perf_start_input(void) {
-    if (!g_perf_enabled || !g_state) return;
-    
-    g_input_start_time = get_current_time_ms();
-}
-
-// 结束输入处理阶段性能测量
-void compositor_perf_end_input(void) {
-    if (!g_perf_enabled || !g_state || g_input_start_time == 0) return;
-    
-    float input_time = (float)(get_current_time_ms() - g_input_start_time);
-    
-    // 更新输入处理时间统计
-    g_perf_stats.current_input_time = input_time;
-    g_perf_stats.min_input_time = MIN(g_perf_stats.min_input_time, input_time);
-    g_perf_stats.max_input_time = MAX(g_perf_stats.max_input_time, input_time);
-    
-    // 重置开始时间
-    g_input_start_time = 0;
-}
-
-// 更新性能统计
-void compositor_perf_update_stats(void) {
-    if (!g_perf_enabled || !g_state) return;
-    
-    // 更新平均统计数据（使用指数移动平均）
-    static int frames_processed = 0;
-    frames_processed++;
-    
-    float alpha = 0.9f; // 平滑因子
-    
-    // 更新FPS平均值
-    g_perf_stats.avg_fps = (frames_processed == 1) ? 
-                           g_perf_stats.current_fps : 
-                           alpha * g_perf_stats.avg_fps + (1 - alpha) * g_perf_stats.current_fps;
-    
-    // 更新帧时间平均值
-    g_perf_stats.avg_frame_time = (frames_processed == 1) ? 
-                                 g_perf_stats.current_frame_time : 
-                                 alpha * g_perf_stats.avg_frame_time + (1 - alpha) * g_perf_stats.current_frame_time;
-    
-    // 更新渲染时间平均值
-    g_perf_stats.avg_render_time = (frames_processed == 1) ? 
-                                  g_perf_stats.current_render_time : 
-                                  alpha * g_perf_stats.avg_render_time + (1 - alpha) * g_perf_stats.current_render_time;
-    
-    // 更新输入处理时间平均值
-    g_perf_stats.avg_input_time = (frames_processed == 1) ? 
-                                 g_perf_stats.current_input_time : 
-                                 alpha * g_perf_stats.avg_input_time + (1 - alpha) * g_perf_stats.current_input_time;
-    
-    // 更新内存使用统计
-    g_perf_stats.current_memory_usage = g_state->total_allocated / 1024; // 转换为KB
-    g_perf_stats.peak_memory_usage = g_state->peak_allocated / 1024; // 转换为KB
-    
-    // 更新窗口统计
-    g_perf_stats.total_windows = g_state->xwayland_state.window_count + g_state->wayland_state.window_count;
-    g_perf_stats.active_windows = (g_state->active_window != NULL) ? 1 : 0;
-    
-    // 更新脏区域统计
-    g_perf_stats.dirty_rect_count = g_state->dirty_rect_count;
-    if (g_state->use_dirty_rect_optimization && g_state->dirty_rect_count > 0) {
-        int total_dirty_area = 0;
-        for (int i = 0; i < g_state->dirty_rect_count; i++) {
-            total_dirty_area += g_state->dirty_rects[i].width * g_state->dirty_rects[i].height;
-        }
-        int screen_area = g_state->width * g_state->height;
-        g_perf_stats.screen_coverage_percent = (screen_area > 0) ? 
-                                              (float)total_dirty_area * 100.0f / screen_area : 0.0f;
-    } else {
-        g_perf_stats.screen_coverage_percent = 100.0f; // 全屏渲染
-    }
-    
-    // 更新性能警告标志
-    g_perf_stats.low_fps_warning = (g_perf_stats.avg_fps < 30.0f);
-    g_perf_stats.high_memory_warning = (g_perf_stats.current_memory_usage > 50 * 1024); // 50MB
-    g_perf_stats.high_cpu_warning = (g_perf_stats.avg_frame_time > 50.0f); // 超过50ms
-    
-    // 记录性能警告
-    if (g_state->config.debug_mode) {
-        if (g_perf_stats.low_fps_warning) {
-            compositor_perf_record_warning("Low FPS detected");
-        }
-        if (g_perf_stats.high_memory_warning) {
-            compositor_perf_record_warning("High memory usage detected");
-        }
-        if (g_perf_stats.high_cpu_warning) {
-            compositor_perf_record_warning("High CPU usage detected");
-        }
-    }
-}
-
-// 获取性能统计数据
-const CompositorPerformanceStats* compositor_perf_get_stats(void) {
-    return &g_perf_stats;
-}
-
-// 记录性能警告
-void compositor_perf_record_warning(const char* warning_message) {
-    if (!g_perf_enabled || !warning_message) return;
-    
-    log_message(COMPOSITOR_LOG_WARN, "Performance warning: %s", warning_message);
-}
-
-// 生成性能报告（返回动态分配的字符串，需要调用者释放）
-char* compositor_perf_generate_report(void) {
-    if (!g_perf_enabled || !g_state) return NULL;
-    
-    // 分配足够的空间
-    char* report = (char*)safe_malloc(2048);
-    if (!report) return NULL;
-    
-    int written = snprintf(report, 2048, 
-        "===== WinDroids Compositor Performance Report =====\n"\n"
-        "FPS: %.1f (min: %.1f, max: %.1f, avg: %.1f)\n"\n"
-        "Frame Time: %.2fms (min: %.2fms, max: %.2fms, avg: %.2fms)\n"\n"
-        "Render Time: %.2fms (min: %.2fms, max: %.2fms, avg: %.2fms)\n"\n"
-        "Input Time: %.2fms (min: %.2fms, max: %.2fms, avg: %.2fms)\n"\n"
-        "Memory Usage: %zu KB (peak: %zu KB)\n"\n"
-        "Windows: %d total, %d active\n"\n"
-        "Render Coverage: %.1f%%, Dirty Rects: %d\n"\n"
-        "Warnings: %s %s %s\n"\n"
-        "=================================================\n",
-        g_perf_stats.current_fps, g_perf_stats.min_fps, g_perf_stats.max_fps, g_perf_stats.avg_fps,
-        g_perf_stats.current_frame_time, g_perf_stats.min_frame_time, g_perf_stats.max_frame_time, g_perf_stats.avg_frame_time,
-        g_perf_stats.current_render_time, g_perf_stats.min_render_time, g_perf_stats.max_render_time, g_perf_stats.avg_render_time,
-        g_perf_stats.current_input_time, g_perf_stats.min_input_time, g_perf_stats.max_input_time, g_perf_stats.avg_input_time,
-        g_perf_stats.current_memory_usage, g_perf_stats.peak_memory_usage,
-        g_perf_stats.total_windows, g_perf_stats.active_windows,
-        g_perf_stats.screen_coverage_percent, g_perf_stats.dirty_rect_count,
-        g_perf_stats.low_fps_warning ? "Low FPS" : "",
-        g_perf_stats.high_memory_warning ? "High Memory" : "",
-        g_perf_stats.high_cpu_warning ? "High CPU" : ""
-    );
-    
-    // 确保字符串以null结尾
-    if (written >= 2048) {
-        report[2047] = '\0';
-    }
-    
-    return report;
-}
-
-// 重置性能统计
-void compositor_perf_reset(void) {
-    // 保存当前的最小值状态，只重置累积统计
-    float min_fps = g_perf_stats.min_fps;
-    float min_frame_time = g_perf_stats.min_frame_time;
-    float min_render_time = g_perf_stats.min_render_time;
-    float min_input_time = g_perf_stats.min_input_time;
-    size_t peak_memory = g_perf_stats.peak_memory_usage;
-    
-    // 重置统计数据
-    memset(&g_perf_stats, 0, sizeof(CompositorPerformanceStats));
-    
-    // 恢复最小值
-    g_perf_stats.min_fps = min_fps;
-    g_perf_stats.min_frame_time = min_frame_time;
-    g_perf_stats.min_render_time = min_render_time;
-    g_perf_stats.min_input_time = min_input_time;
-    g_perf_stats.peak_memory_usage = peak_memory;
-    
-    // 重置时间戳
-    g_frame_start_time = 0;
-    g_render_start_time = 0;
-    g_input_start_time = 0;
-    
-    log_message(COMPOSITOR_LOG_INFO, "Performance statistics reset");
+// 销毁性能监控器
+void perf_monitor_destroy(void) {
+    memset(&g_monitor, 0, sizeof(g_monitor));
+    LOGI("Performance monitor destroyed");
 }
 
 // 启用/禁用性能监控
-void compositor_perf_set_enabled(bool enabled) {
-    g_perf_enabled = enabled;
-    log_message(COMPOSITOR_LOG_INFO, "Performance monitoring %s", enabled ? "enabled" : "disabled");
+void perf_monitor_set_enabled(bool enabled) {
+    g_monitor.enabled = enabled;
 }
+
+// 设置更新间隔
+void perf_monitor_set_update_interval(uint32_t interval) {
+    if (interval == 0) interval = 1;
+    g_monitor.update_interval = interval;
+}
+
+// 开始帧
+void perf_monitor_begin_frame(void) {
+    if (!g_monitor.enabled) return;
+    
+    g_monitor.last_frame_time = perf_get_time();
+}
+
+// 结束帧
+void perf_monitor_end_frame(void) {
+    if (!g_monitor.enabled) return;
+    
+    uint64_t current_time = perf_get_time();
+    float frame_time = (float)(current_time - g_monitor.last_frame_time) / 1000.0f; // 毫秒
+    
+    // 更新帧时间统计
+    if (frame_time < g_monitor.min_frame_time) {
+        g_monitor.min_frame_time = frame_time;
+    }
+    if (frame_time > g_monitor.max_frame_time) {
+        g_monitor.max_frame_time = frame_time;
+    }
+    
+    // 更新平均帧时间
+    g_monitor.avg_frame_time = (g_monitor.avg_frame_time * (g_monitor.frame_count - 1) + frame_time) / g_monitor.frame_count;
+    
+    // 更新帧率
+    if (frame_time > 0.0f) {
+        g_monitor.fps = 1000.0f / frame_time;
+    }
+    
+    // 增加帧计数
+    g_monitor.frame_count++;
+    g_monitor.frame_since_update++;
+    
+    // 更新计数器
+    perf_update_counters();
+    
+    // 检查是否需要更新统计
+    if (g_monitor.frame_since_update >= g_monitor.update_interval) {
+        g_monitor.frame_since_update = 0;
+        
+        // 更新计数器平均值和峰值
+        for (int i = 0; i < PERF_COUNTER_COUNT; i++) {
+            // 平均值
+            g_monitor.counter_averages[i] = (float)g_monitor.counter_totals[i] / g_monitor.frame_count;
+            
+            // 峰值
+            if (g_monitor.counters[i] > g_monitor.counter_peaks[i]) {
+                g_monitor.counter_peaks[i] = g_monitor.counters[i];
+            }
+        }
+        
+        // 检查性能警告
+        perf_check_warnings();
+    }
+}
+
+// 更新计数器
+void perf_monitor_update_counter(perf_counter_type_t type, uint64_t value) {
+    if (!g_monitor.enabled || type < 0 || type >= PERF_COUNTER_COUNT) {
+        return;
+    }
+    
+    g_monitor.counters[type] = value;
+    g_monitor.counter_totals[type] += value;
+}
+
+// 增加计数器
+void perf_monitor_increment_counter(perf_counter_type_t type) {
+    if (!g_monitor.enabled || type < 0 || type >= PERF_COUNTER_COUNT) {
+        return;
+    }
+    
+    g_monitor.counters[type]++;
+    g_monitor.counter_totals[type]++;
+}
+
+// 获取当前帧率
+float perf_monitor_get_fps(void) {
+    return g_monitor.fps;
+}
+
+// 获取平均帧时间
+float perf_monitor_get_avg_frame_time(void) {
+    return g_monitor.avg_frame_time;
+}
+
+// 获取最小帧时间
+float perf_monitor_get_min_frame_time(void) {
+    return g_monitor.min_frame_time;
+}
+
+// 获取最大帧时间
+float perf_monitor_get_max_frame_time(void) {
+    return g_monitor.max_frame_time;
+}
+
+// 获取计数器值
+uint64_t perf_monitor_get_counter(perf_counter_type_t type) {
+    if (type < 0 || type >= PERF_COUNTER_COUNT) {
+        return 0;
+    }
+    
+    return g_monitor.counters[type];
+}
+
+// 获取计数器平均值
+float perf_monitor_get_counter_average(perf_counter_type_t type) {
+    if (type < 0 || type >= PERF_COUNTER_COUNT) {
+        return 0.0f;
+    }
+    
+    return g_monitor.counter_averages[type];
+}
+
+// 获取计数器峰值
+float perf_monitor_get_counter_peak(perf_counter_type_t type) {
+    if (type < 0 || type >= PERF_COUNTER_COUNT) {
+        return 0.0f;
+    }
+    
+    return g_monitor.counter_peaks[type];
+}
+
+// 重置性能监控器
+void perf_monitor_reset(void) {
+    memset(&g_monitor.counters, 0, sizeof(g_monitor.counters));
+    memset(&g_monitor.counter_totals, 0, sizeof(g_monitor.counter_totals));
+    memset(&g_monitor.counter_averages, 0, sizeof(g_monitor.counter_averages));
+    memset(&g_monitor.counter_peaks, 0, sizeof(g_monitor.counter_peaks));
+    
+    g_monitor.frame_count = 0;
+    g_monitor.frame_since_update = 0;
+    g_monitor.fps = 0.0f;
+    g_monitor.avg_frame_time = 0.0f;
+    g_monitor.min_frame_time = 1000.0f;
+    g_monitor.max_frame_time = 0.0f;
+    g_monitor.last_frame_time = perf_get_time();
+}
+
+// 初始化性能分析器
+int profiler_init(uint32_t max_samples) {
+    if (g_profiler.enabled) {
+        LOGE("Profiler already initialized");
+        return -1;
+    }
+    
+    if (max_samples == 0) {
+        max_samples = 1000; // 默认1000个样本
+    }
+    
+    memset(&g_profiler, 0, sizeof(g_profiler));
+    g_profiler.enabled = true;

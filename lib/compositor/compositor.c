@@ -1,853 +1,1447 @@
-/*
- * WinDroids Compositor
- * Main implementation file containing core functionality and module integration
- */
-
-#include "compositor.h" // 通过compositor.h间接包含其他头文件
+#include "compositor.h"
+#include "compositor_input.h"
+#include "compositor_vulkan.h"
+#include "compositor_window.h"
+#include "compositor_render.h"
+#include "compositor_resource.h"
+#include "compositor_perf.h"
+#include "compositor_perf_opt.h"
+#include "compositor_game.h"
+#include "compositor_monitor.h"
+#include <android/log.h>
 #include <android/native_window.h>
+#include <dlfcn.h>
+#include <errno.h>
+#include <fcntl.h>
+#include <pthread.h>
+#include <signal.h>
+#include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
-#include <math.h>
-#include "compositor_input.h" // 包含输入处理头文件
-#include "compositor_utils.h" // 包含工具函数头文件
-#include "compositor_render.h" // 包含渲染模块头文件
-#include "compositor_dirty.h" // 包含脏区域管理头文件
-#include "input/compositor_input_window_switch.h" // 包含窗口切换头文件
-#include "input/compositor_window_preview.h" // 包含窗口预览头文件
+#include <sys/epoll.h>
+#include <sys/socket.h>
+#include <sys/stat.h>
+#include <sys/types.h>
+#include <sys/wait.h>
+#include <time.h>
+#include <unistd.h>
+#include <wayland-server-core.h>
+#include <wlr/backend/headless.h>
+#include <wlr/backend/interface.h>
+#include <wlr/render/vulkan.h>
+#include <wlr/types/wlr_compositor.h>
+#include <wlr/types/wlr_data_device.h>
+#include <wlr/types/wlr_output.h>
+#include <wlr/types/wlr_output_layout.h>
+#include <wlr/types/wlr_scene.h>
+#include <wlr/types/wlr_seat.h>
+#include <wlr/types/wlr_xcursor_manager.h>
+#include <wlr/types/wlr_xdg_decoration_v1.h>
+#include <wlr/types/wlr_xdg_shell.h>
+#include <wlr/util/log.h>
+#include <vulkan/vulkan.h>
+#include <vulkan/vulkan_android.h>
 
-// 全局状态
-static CompositorState g_compositor_state;
-static bool g_initialized = false;
+#define LOG_TAG "Compositor"
+#define LOGI(...) __android_log_print(ANDROID_LOG_INFO, LOG_TAG, __VA_ARGS__)
+#define LOGE(...) __android_log_print(ANDROID_LOG_ERROR, LOG_TAG, __VA_ARGS__)
+#define LOGD(...) __android_log_print(ANDROID_LOG_DEBUG, LOG_TAG, __VA_ARGS__)
 
-// Schedule a redraw of the compositor
-void compositor_schedule_redraw(void) {
-    // This function has been moved to compositor_render.c
-}
+// 简化的合成器状态结构
+struct compositor_state {
+    ANativeWindow* window;
+    int width;
+    int height;
+    
+    // Wayland/wlroots 组件
+    struct wl_display* display;
+    struct wl_event_loop* event_loop;
+    struct wlr_backend* backend;
+    struct wlr_renderer* renderer;
+    struct wlr_output* output;
+    struct wlr_output_layout* output_layout;
+    struct wlr_scene* scene;
+    struct wlr_scene_output* scene_output;
+    
+    // Xwayland
+    pid_t xwayland_pid;
+    int wl_display_fd;
+    char xwayland_display[8];
+    
+    // Vulkan相关
+    struct vulkan_state vulkan;
+    
+    // 性能统计
+    uint32_t frame_count;
+    uint64_t last_frame_time;
+    float fps;
+    
+    // 输入
+    struct wlr_seat* seat;
+    struct wlr_cursor* cursor;
+    struct wlr_xcursor_manager* cursor_mgr;
+    
+    // 状态标志
+    bool initialized;
+    bool xwayland_started;
+    bool vulkan_initialized;
+};
 
-// Mark a rect as dirty for redrawing
-void compositor_mark_dirty_rect(int x, int y, int width, int height) {
-    // This function has been moved to compositor_dirty.c
-}
+static struct compositor_state g_state = {0};
 
-// Clear all dirty rects
-void compositor_clear_dirty_rects(void) {
-    // This function has been moved to compositor_dirty.c
-}
-
-// Merge overlapping dirty rects
-void merge_dirty_rects(void) {
-    // This function has been moved to compositor_dirty.c
-}
+// 内部函数声明
+static int init_wayland(void);
+static int init_wlroots(void);
+static int init_vulkan(void);
+static int start_xwayland(void);
+static void handle_xwayland_dead(int sig);
+static int create_vulkan_render_pass(void);
+static int create_vulkan_framebuffers(void);
+static int create_vulkan_command_buffers(void);
+static int create_vulkan_sync_objects(void);
+static void cleanup_vulkan(void);
+static void cleanup_wayland(void);
+static void cleanup_wlroots(void);
+static void cleanup_xwayland(void);
+static int render_frame(void);
+static void update_fps(void);
 
 // 初始化合成器
-int compositor_init(ANativeWindow* window, int width, int height, CompositorConfig* config) {
-    if (g_initialized) {
-        log_message(COMPOSITOR_LOG_WARN, "Compositor already initialized");
-        return COMPOSITOR_OK;
-    }
-    
-    if (!window) {
-        set_error(COMPOSITOR_ERROR_INVALID_ARGS, "Invalid window handle");
-        return COMPOSITOR_ERROR_INVALID_ARGS;
-    }
-    
-    log_message(COMPOSITOR_LOG_INFO, "Initializing compositor...");
-    
-    // 初始化全局状态
-    memset(&g_compositor_state, 0, sizeof(CompositorState));
-    g_compositor_state.window = window;
-    g_compositor_state.width = width;
-    g_compositor_state.height = height;
-    g_compositor_state.next_z_order = 10;  // 初始Z轴顺序从10开始
-    g_compositor_state.use_dirty_rect_optimization = g_compositor_state.config.enable_dirty_rects;
-    
-    // 合并配置
-    g_compositor_state.config = *compositor_merge_config(config);
-    
-    // 验证配置
-    if (compositor_validate_config(&g_compositor_state.config) != COMPOSITOR_OK) {
-        log_message(COMPOSITOR_LOG_ERROR, "Invalid compositor configuration");
-        return COMPOSITOR_ERROR_INVALID_CONFIG;
-    }
-    
-    // 打印配置信息
-    if (g_compositor_state.config.debug_mode) {
-        compositor_print_config(&g_compositor_state.config);
-    }
-    
-    // 设置日志级别
-    utils_set_log_level(g_compositor_state.config.log_level);
-    
-    // 初始化各模块状态
-    compositor_window_set_state(&g_compositor_state);
-    compositor_input_set_state(&g_compositor_state);
-    compositor_render_set_state(&g_compositor_state);
-    compositor_dirty_set_state(&g_compositor_state);
-    
-    // 设置性能监控模块的状态引用
-    compositor_perf_set_state(&g_compositor_state);
-    
-    // 初始化事件系统
-    compositor_events_set_state(&g_compositor_state);
-    if (compositor_events_init() != COMPOSITOR_OK) {
-        log_message(COMPOSITOR_LOG_ERROR, "Failed to initialize event system");
-        goto cleanup;
-    }
-    
-    // 初始化性能监控系统
-    if (compositor_perf_init() != COMPOSITOR_OK) {
-        log_message(COMPOSITOR_LOG_ERROR, "Failed to initialize performance monitoring");
-        goto cleanup;
-    }
-    
-    // 初始化工具函数系统
-    compositor_utils_set_state(&g_compositor_state);
-    
-    // 初始化Xwayland状态
-    memset(&g_compositor_state.xwayland_state, 0, sizeof(XwaylandState));
-    g_compositor_state.xwayland_state.windows = NULL;
-    g_compositor_state.xwayland_state.window_count = 0;
-    g_compositor_state.xwayland_state.max_windows = g_compositor_state.config.max_windows;
-    g_compositor_state.xwayland_state.capacity = 0;
-    
-    // 初始化Wayland状态
-    memset(&g_compositor_state.wayland_state, 0, sizeof(WaylandState));
-    g_compositor_state.wayland_state.windows = NULL;
-    g_compositor_state.wayland_state.window_count = 0;
-    g_compositor_state.wayland_state.max_windows = g_compositor_state.config.max_windows;
-    g_compositor_state.wayland_state.capacity = 0;
-    
-    // 初始化拖动状态
-    g_compositor_state.dragging_window = NULL;
-    g_compositor_state.is_dragging = false;
-    g_compositor_state.drag_offset_x = 0;
-    g_compositor_state.drag_offset_y = 0;
-    g_compositor_state.active_window = NULL;
-    g_compositor_state.active_window_is_wayland = false;
-    
-    // 初始化手势状态
-    g_compositor_state.is_gesturing = false;
-    g_compositor_state.last_gesture_type = COMPOSITOR_GESTURE_NONE;
-    
-    // 初始化多窗口管理增强功能
-    g_compositor_state.workspaces = NULL;
-    g_compositor_state.workspace_count = 0;
-    g_compositor_state.active_workspace = 0;
-    g_compositor_state.window_groups = NULL;
-    g_compositor_state.window_group_count = 0;
-    g_compositor_state.tile_mode = TILE_MODE_NONE;
-    g_compositor_state.window_snapshots = NULL;
-    g_compositor_state.snapshot_is_wayland = NULL;
-    g_compositor_state.snapshot_count = 0;
-    
-    // 创建默认工作区
-    compositor_create_workspace("Default");
-    
-    // 初始化多窗口管理增强功能
-    g_compositor_state.workspaces = NULL;
-    g_compositor_state.workspace_count = 0;
-    g_compositor_state.active_workspace = 0;
-    g_compositor_state.window_groups = NULL;
-    g_compositor_state.window_group_count = 0;
-    g_compositor_state.tile_mode = TILE_MODE_NONE;
-    g_compositor_state.window_snapshots = NULL;
-    g_compositor_state.snapshot_is_wayland = NULL;
-    g_compositor_state.snapshot_count = 0;
-    
-    // 创建默认工作区
-    compositor_create_workspace("Default");
-    
-    // 初始化脏区域数组
-    if (g_compositor_state.config.enable_dirty_rects && g_compositor_state.config.max_dirty_rects > 0) {
-        g_compositor_state.dirty_rects = (DirtyRect*)safe_malloc(
-            sizeof(DirtyRect) * g_compositor_state.config.max_dirty_rects);
-        if (!g_compositor_state.dirty_rects) {
-            goto cleanup;
-        }
-        g_compositor_state.dirty_rect_count = 0;
-        g_compositor_state.use_dirty_rect_optimization = true;
-        track_memory_allocation(sizeof(DirtyRect) * g_compositor_state.config.max_dirty_rects);
-    }
-    
-    // 分配窗口数组（使用动态扩容机制）
-    int initial_capacity = 8;  // 初始容量
-    if (g_compositor_state.config.enable_xwayland) {
-        g_compositor_state.xwayland_state.windows = (XwaylandWindowState**)safe_malloc(
-            sizeof(XwaylandWindowState*) * initial_capacity);
-        if (!g_compositor_state.xwayland_state.windows) {
-            goto cleanup;
-        }
-        g_compositor_state.xwayland_state.capacity = initial_capacity;
-        track_memory_allocation(sizeof(XwaylandWindowState*) * initial_capacity);
-    }
-    
-    g_compositor_state.wayland_state.windows = (WaylandWindow**)safe_malloc(
-        sizeof(WaylandWindow*) * initial_capacity);
-    if (!g_compositor_state.wayland_state.windows) {
-        goto cleanup;
-    }
-    g_compositor_state.wayland_state.capacity = initial_capacity;
-    track_memory_allocation(sizeof(WaylandWindow*) * initial_capacity);
-    
-    // 初始化Vulkan
-    if (g_compositor_state.config.use_hardware_acceleration) {
-        if (init_vulkan(&g_compositor_state) != COMPOSITOR_OK) {
-            log_message(COMPOSITOR_LOG_ERROR, "Failed to initialize Vulkan");
-            goto cleanup;
-        }
-    }
-    
-    // 初始化输入系统
-    if (compositor_input_init() != COMPOSITOR_OK) {
-        log_message(COMPOSITOR_LOG_ERROR, "Failed to initialize input system");
-        goto cleanup;
-    }
-    
-    // 设置输入捕获模式
-    compositor_input_set_capture_mode(g_compositor_state.config.input_capture_mode);
-    
-    // 初始化触控笔状态
-    g_compositor_state.pen_is_pressed = false;
-    g_compositor_state.pen_last_x = 0;
-    g_compositor_state.pen_last_y = 0;
-    g_compositor_state.pen_last_pressure = 0.0f;
-    g_compositor_state.pen_last_tilt_x = 0;
-    g_compositor_state.pen_last_tilt_y = 0;
-    g_compositor_state.pen_pressed_time = 0;
-    
-    // 初始化输入配置
-    g_compositor_state.config.enable_gestures = true;
-    g_compositor_state.config.enable_touch_emulation = false;
-    g_compositor_state.config.joystick_mouse_emulation = true;
-    g_compositor_state.config.joystick_sensitivity = 1.0f;
-    g_compositor_state.config.joystick_deadzone = 0.1f;
-    g_compositor_state.config.joystick_max_speed = 5;
-    g_compositor_state.config.enable_pen_pressure = true;
-    g_compositor_state.config.enable_pen_tilt = true;
-    g_compositor_state.config.pen_pressure_sensitivity = 1.0f;
-    g_compositor_state.config.enable_window_gestures = true;
-    g_compositor_state.config.double_tap_timeout = 300;
-    g_compositor_state.config.long_press_timeout = 500;
-    
-    log_message(COMPOSITOR_LOG_INFO, "Input system initialized with multi-device support");
-    
-    // 设置输入状态指针
-    compositor_input_set_state(&g_compositor_state);
-    
-    // 设置窗口状态指针
-    compositor_window_set_state(&g_compositor_state);
-    
-    // 初始化窗口切换系统
-    if (compositor_input_init_window_switch(&g_compositor_state) != COMPOSITOR_OK) {
-        log_message(COMPOSITOR_LOG_ERROR, "Failed to initialize window switch system");
-        goto cleanup;
-    }
-    
-    // 初始化窗口预览系统
-    compositor_window_preview_set_state(&g_compositor_state);
-    if (compositor_window_preview_init() != COMPOSITOR_OK) {
-        log_message(COMPOSITOR_LOG_ERROR, "Failed to initialize window preview system");
-        goto cleanup;
-    }
-    
-    // 初始化性能统计
-    g_compositor_state.last_frame_time = 0;
-    g_compositor_state.fps = 0.0f;
-    g_compositor_state.frame_count = 0;
-    g_compositor_state.total_render_time = 0;
-    g_compositor_state.avg_frame_time = 0.0f;
-    
-    // 初始化内存跟踪
-    g_compositor_state.total_allocated = 0;
-    g_compositor_state.peak_allocated = 0;
-    
-    g_initialized = true;
-    log_message(COMPOSITOR_LOG_INFO, "Compositor initialized successfully: %dx%d", width, height);
-    return COMPOSITOR_OK;
-    
-cleanup:
-    compositor_destroy();
-    return COMPOSITOR_ERROR_INIT;
-}
-
-// 从compositor_window.c导入窗口管理函数
-// 这些函数现在在compositor_window.c中实现
-
-// 主循环单步
-int compositor_step(void) {
-    if (!g_initialized) {
-        set_error(COMPOSITOR_ERROR_NOT_INITIALIZED, "Compositor not initialized");
-        return COMPOSITOR_ERROR_NOT_INITIALIZED;
-    }
-    
-    // 开始帧性能测量
-    compositor_perf_start_frame();
-    
-    // 获取当前时间
-    int64_t current_time = get_current_time_ms();
-    
-    // 更新性能统计
-    compositor_perf_end_frame();
-    compositor_perf_update_stats();
-    
-    // 在调试模式下生成性能报告（每60帧）
-    static int frame_counter = 0;
-    if (g_compositor_state.config.debug_mode && (frame_counter % 60 == 0)) {
-        char* report = compositor_perf_generate_report();
-        if (report) {
-            log_message(COMPOSITOR_LOG_INFO, "\n%s", report);
-            free(report);
-        }
-    }
-    frame_counter++;
-    
-    // 实现帧率限制
-    if (g_compositor_state.config.max_fps > 0) {
-        int64_t frame_time_ms = 1000 / g_compositor_state.config.max_fps;
-        int64_t time_since_last_frame = current_time - g_compositor_state.last_frame_time;
-        
-        if (time_since_last_frame < frame_time_ms) {
-            // 帧时间太短，等待以达到目标帧率
-            if (g_compositor_state.config.debug_mode) {
-                log_message(COMPOSITOR_LOG_DEBUG, "Frame rate limiting: waiting %lld ms", 
-                           frame_time_ms - time_since_last_frame);
-            }
-            
-            // 避免完全阻塞，使用非阻塞等待或让出CPU
-            utils_sleep_ms(frame_time_ms - time_since_last_frame);
-            current_time = get_current_time_ms();
-        }
-    }
-    
-    // 处理窗口事件
-    process_window_events(&g_compositor_state);
-    
-    // 处理输入事件 - 通过compositor_input.c中的函数
-    
-    // 处理输入事件 - 通过compositor_input.c中的函数
-    
-    // 检查是否需要重绘
-    bool needs_redraw = g_compositor_state.needs_redraw || g_compositor_state.config.debug_mode;
-    
-    // 检查脏区域
-    if (g_compositor_state.use_dirty_rect_optimization && g_compositor_state.dirty_rect_count > 0) {
-        needs_redraw = true;
-    }
-    
-    if (needs_redraw) {
-        // 开始渲染计时
-        int64_t render_start_time = current_time;
-        
-        // 如果启用了脏区域优化，合并脏区域
-        if (g_compositor_state.use_dirty_rect_optimization) {
-            // 如果有脏区域，合并它们
-            if (g_compositor_state.dirty_rect_count > 1) {
-                merge_dirty_rects(&g_compositor_state);
-            }
-            
-            // 计算总脏区域大小，决定是否重绘整个屏幕
-            if (g_compositor_state.dirty_rect_count > 0) {
-                int total_dirty_area = 0;
-                for (int i = 0; i < g_compositor_state.dirty_rect_count; i++) {
-                    total_dirty_area += (
-                        g_compositor_state.dirty_rects[i].width * 
-                        g_compositor_state.dirty_rects[i].height);
-                }
-                
-                int screen_area = g_compositor_state.width * g_compositor_state.height;
-                
-                // 如果脏区域超过屏幕的60%，重绘整个屏幕
-                if (total_dirty_area > screen_area * 0.6f) {
-                    log_message(COMPOSITOR_LOG_DEBUG, "Dirty area exceeds 60%%, redrawing entire screen");
-                    g_compositor_state.dirty_rect_count = 1;
-                    g_compositor_state.dirty_rects[0].x = 0;
-                    g_compositor_state.dirty_rects[0].y = 0;
-                    g_compositor_state.dirty_rects[0].width = g_compositor_state.width;
-                    g_compositor_state.dirty_rects[0].height = g_compositor_state.height;
-                }
-            }
-        }
-        
-        // 渲染帧
-    int render_result = COMPOSITOR_OK;
-    
-    if (g_compositor_state.config.use_hardware_acceleration) {
-        // 开始渲染性能测量
-        compositor_perf_start_render();
-        
-        render_result = render_frame();
-        
-        // 结束渲染性能测量
-        compositor_perf_end_render();
-    } else {
-        // 软件渲染路径（预留）
-        log_message(COMPOSITOR_LOG_WARN, "Software rendering not implemented");
-        render_result = COMPOSITOR_ERROR_RENDER;
-    }
-        
-        if (render_result != COMPOSITOR_OK) {
-            log_message(COMPOSITOR_LOG_ERROR, "Failed to render frame: %d", render_result);
-            
-            // 如果Vulkan渲染失败，尝试回退到软件渲染
-            if (render_result == COMPOSITOR_ERROR_VULKAN && 
-                g_compositor_state.config.use_hardware_acceleration) {
-                log_message(COMPOSITOR_LOG_WARN, "Falling back to software rendering");
-                // 实际实现中应该调用软件渲染函数
-                log_message(COMPOSITOR_LOG_ERROR, "Software rendering fallback not available");
-            }
-            
-            return render_result;
-        }
-        
-        // 记录渲染时间
-        int64_t render_time = get_current_time_ms() - render_start_time;
-        
-        // 限制高CPU使用率
-        if (render_time < 5 && g_compositor_state.config.enable_cpu_throttling) {
-            utils_sleep_ms(1); // 短暂睡眠以减少CPU使用
-        }
-        
-        // 清除脏区域
-            if (g_compositor_state.use_dirty_rect_optimization) {
-                compositor_clear_dirty_rects();
-            }
-        
-        g_compositor_state.needs_redraw = false;
-    }
-    
-    // 更新渲染时间统计
-    int64_t render_time = get_current_time_ms() - current_time;
-    g_compositor_state.total_render_time += render_time;
-    if (g_compositor_state.frame_count > 0) {
-        g_compositor_state.avg_frame_time = (float)g_compositor_state.total_render_time / g_compositor_state.frame_count;
-    }
-    
-    // 更新性能统计
-    update_performance_stats();
-    
-    // 更新最后帧时间
-    g_compositor_state.last_frame_time = current_time;
-    
-    return COMPOSITOR_OK;
-}
-
-// 输入处理相关函数现在在 compositor_input.c 中实现
-    // 简化实现：触摸事件可以类似鼠标事件处理
-    // 在实际应用中，需要更复杂的多点触摸处理逻辑
-    if (event->touch.type == COMPOSITOR_TOUCH_BEGIN) {
-        // 单指触摸开始，相当于鼠标按下
-        CompositorInputEvent mouse_event;
-        mouse_event.type = COMPOSITOR_INPUT_EVENT_MOUSE_BUTTON;
-        mouse_event.mouse_button.x = event->touch.points[0].x;
-        mouse_event.mouse_button.y = event->touch.points[0].y;
-        mouse_event.mouse_button.button = COMPOSITOR_MOUSE_BUTTON_LEFT;
-        mouse_event.mouse_button.pressed = true;
-        process_mouse_button_event(&mouse_event);
-    } else if (event->touch.type == COMPOSITOR_TOUCH_END) {
-        // 触摸结束，相当于鼠标释放
-        CompositorInputEvent mouse_event;
-        mouse_event.type = COMPOSITOR_INPUT_EVENT_MOUSE_BUTTON;
-        mouse_event.mouse_button.pressed = false;
-        process_mouse_button_event(&mouse_event);
-    } else if (event->touch.type == COMPOSITOR_TOUCH_MOTION) {
-        // 触摸移动，相当于鼠标移动
-        CompositorInputEvent mouse_event;
-        mouse_event.type = COMPOSITOR_INPUT_EVENT_MOUSE_MOTION;
-        mouse_event.mouse.x = event->touch.points[0].x;
-        mouse_event.mouse.y = event->touch.points[0].y;
-        process_mouse_motion_event(&mouse_event);
-    }
-}
-
-// 处理手势事件
-// 输入处理相关函数现在在 compositor_input.c 中实现
-// void process_gesture_event(CompositorInputEvent* event) {
-    if (!g_compositor_state.config.enable_gestures) return;
-    
-    g_compositor_state.last_gesture_type = event->gesture.type;
-    
-    switch (event->gesture.type) {
-        case COMPOSITOR_GESTURE_PINCH:
-            // 处理缩放手势
-            if (g_compositor_state.active_window && 
-                g_compositor_state.config.enable_window_gesture_scaling) {
-                float scale_factor = event->gesture.scale;
-                // 在实际应用中，这里会调整窗口大小
-                if (g_compositor_state.config.debug_mode) {
-                    log_message(COMPOSITOR_LOG_DEBUG, "Pinch gesture detected, scale: %f", scale_factor);
-                }
-            }
-            break;
-            
-        case COMPOSITOR_GESTURE_SWIPE:
-            // 处理滑动手势
-            if (g_compositor_state.config.debug_mode) {
-                log_message(COMPOSITOR_LOG_DEBUG, "Swipe gesture detected, direction: %d", 
-                           event->gesture.direction);
-            }
-            break;
-            
-        case COMPOSITOR_GESTURE_DOUBLE_TAP:
-            // 处理双击手势（例如最大化窗口）
-            if (g_compositor_state.active_window && 
-                g_compositor_state.config.enable_window_double_tap_maximize) {
-                if (g_compositor_state.config.debug_mode) {
-                    log_message(COMPOSITOR_LOG_DEBUG, "Double tap detected on active window");
-                }
-                // 在实际应用中，这里会处理窗口最大化逻辑
-            }
-            break;
-            
-        default:
-            break;
-    }
-}
-
-// 处理窗口事件
-void process_window_events(CompositorState* state) {
-    if (!state) return;
-    
-    // 实际实现中会处理窗口创建、销毁等事件
-    log_message(COMPOSITOR_LOG_DEBUG, "Processing window events");
-    
-    // 这里可以添加窗口事件处理逻辑
-    // - 窗口创建/销毁事件
-    // - 窗口属性变更事件
-    // - 窗口表面更新事件
-    // - 窗口焦点变化事件
-    
-    // 检查窗口是否需要更新
-    for (int i = 0; i < state->wayland_state.window_count; i++) {
-        WaylandWindow* window = state->wayland_state.windows[i];
-        if (window->is_dirty) {
-            // 标记窗口区域为脏
-            compositor_mark_dirty_rect(window->x, window->y, 
-                                     window->width, window->height);
-            window->is_dirty = false;
-        }
-    }
-    
-    for (int i = 0; i < state->xwayland_state.window_count; i++) {
-        XwaylandWindowState* window = state->xwayland_state.windows[i];
-        if (window->is_dirty) {
-            // 标记窗口区域为脏
-            compositor_mark_dirty_rect(window->x, window->y, 
-                                     window->width, window->height);
-            window->is_dirty = false;
-        }
-    }
-}
-
-// 合并脏区域 - 现在在compositor_dirty.c中实现
-
-// 销毁合成器
-void compositor_destroy(void) {
-    if (!g_initialized) return;
-    
-    log_message(COMPOSITOR_LOG_INFO, "Destroying compositor...");
-    
-    // 清理Vulkan资源
-    if (g_compositor_state.config.use_hardware_acceleration) {
-        compositor_vulkan_cleanup();
-    }
-    
-    // 清理窗口
-    cleanup_windows(&g_compositor_state);
-    
-    // 清理脏区域数组
-    compositor_clear_dirty_rects();
-    if (g_compositor_state.dirty_rects) {
-        track_memory_free(sizeof(DirtyRect) * g_compositor_state.config.max_dirty_rects);
-        free(g_compositor_state.dirty_rects);
-        g_compositor_state.dirty_rects = NULL;
-    }
-    
-    // 清理配置
-    compositor_free_config(&g_compositor_state.config);
-    
-    // 清理各模块
-    compositor_perf_cleanup();
-    compositor_events_cleanup();
-    compositor_window_cleanup();
-    compositor_input_cleanup();
-    
-    // 清理窗口切换和预览系统
-    compositor_input_window_switch_cleanup();
-    compositor_window_preview_cleanup();
-    
-    compositor_utils_cleanup();
-    
-    g_initialized = false;
-    log_message(COMPOSITOR_LOG_INFO, "Compositor destroyed successfully");
-}
-
-// 窗口清理函数现在在compositor_window.c中实现
-
-// 设置窗口大小
-int compositor_resize(int width, int height) {
-    if (!g_initialized) {
-        set_error(COMPOSITOR_ERROR_NOT_INITIALIZED, "Compositor not initialized");
-        return COMPOSITOR_ERROR_NOT_INITIALIZED;
-    }
-    
-    if (width <= 0 || height <= 0) {
-        set_error(COMPOSITOR_ERROR_INVALID_ARGS, "Invalid window size");
-        return COMPOSITOR_ERROR_INVALID_ARGS;
-    }
-    
-    log_message(COMPOSITOR_LOG_INFO, "Resizing compositor to %dx%d", width, height);
-    
-    g_compositor_state.width = width;
-    g_compositor_state.height = height;
-    
-    // 重建交换链
-    if (g_compositor_state.config.use_hardware_acceleration) {
-        if (recreate_swapchain(width, height) != COMPOSITOR_OK) {
-            log_message(COMPOSITOR_LOG_ERROR, "Failed to resize compositor");
-            return COMPOSITOR_ERROR_SWAPCHAIN_ERROR;
-        }
-    }
-    
-    // 标记需要重绘
-    g_compositor_state.needs_redraw = true;
-    
-    return COMPOSITOR_OK;
-}
-
-// 获取活动窗口标题
-const char* compositor_get_active_window_title() {
-    if (!g_initialized) {
-        return NULL;
-    }
-    
-    if (g_compositor_state.active_window) {
-        if (g_compositor_state.active_window_is_wayland) {
-            WaylandWindow* window = (WaylandWindow*)g_compositor_state.active_window;
-            return window->title;
-        } else {
-            XwaylandWindowState* window = (XwaylandWindowState*)g_compositor_state.active_window;
-            return window->title;
-        }
-    }
-    
-    return NULL;
-}
-
-// 触发重绘 - 现在在compositor_render.c中实现
-
-// 标记脏区域 - 现在在compositor_dirty.c中实现
-
-// 清除脏区域 - 现在在compositor_dirty.c中实现
-
-// 窗口排序函数现在在compositor_window.c中实现
-
-// 获取窗口Z顺序
-int compositor_get_window_z_order(const char* window_title) {
-    if (!g_initialized || !window_title) {
+int compositor_init(ANativeWindow* window, int width, int height) {
+    if (g_state.initialized) {
+        LOGE("Compositor already initialized");
         return -1;
     }
     
-    // 查找Xwayland窗口
-    for (int i = 0; i < g_compositor_state.xwayland_state.window_count; i++) {
-        XwaylandWindowState* window = g_compositor_state.xwayland_state.windows[i];
-        if (window->title && strcmp(window->title, window_title) == 0) {
-            return window->z_order;
-        }
+    if (!window || width <= 0 || height <= 0) {
+        LOGE("Invalid parameters");
+        return -1;
     }
     
-    // 查找Wayland窗口
-    for (int i = 0; i < g_compositor_state.wayland_state.window_count; i++) {
-        WaylandWindow* window = g_compositor_state.wayland_state.windows[i];
-        if (window->title && strcmp(window->title, window_title) == 0) {
-            return window->z_order;
-        }
+    memset(&g_state, 0, sizeof(g_state));
+    g_state.window = window;
+    g_state.width = width;
+    g_state.height = height;
+    
+    // 初始化窗口管理器
+    if (window_manager_init(width, height) != 0) {
+        LOGE("Failed to initialize window manager");
+        return -1;
     }
     
-    return -1;
+    // 初始化渲染器
+    if (renderer_init(window, width, height) != 0) {
+        LOGE("Failed to initialize renderer");
+        window_manager_destroy();
+        return -1;
+    }
+    
+    // 初始化资源管理器
+    if (resource_manager_init(256 * 1024 * 1024) != 0) { // 256MB
+        LOGE("Failed to initialize resource manager");
+        renderer_destroy();
+        window_manager_destroy();
+        return -1;
+    }
+    
+    // 初始化性能监控器
+    if (perf_monitor_init(60) != 0) {
+        LOGE("Failed to initialize performance monitor");
+        resource_manager_destroy();
+        renderer_destroy();
+        window_manager_destroy();
+        return -1;
+    }
+    
+    // 初始化性能优化模块
+    if (perf_opt_init() != 0) {
+        LOGE("Failed to initialize performance optimization");
+        perf_monitor_destroy();
+        resource_manager_destroy();
+        renderer_destroy();
+        window_manager_destroy();
+        return -1;
+    }
+    
+    // 初始化游戏模式模块
+    if (game_mode_init() != 0) {
+        LOGE("Failed to initialize game mode");
+        perf_opt_destroy();
+        perf_monitor_destroy();
+        resource_manager_destroy();
+        renderer_destroy();
+        window_manager_destroy();
+        return -1;
+    }
+    
+    // 初始化监控模块
+    if (monitor_init() != 0) {
+        LOGE("Failed to initialize monitor");
+        game_mode_destroy();
+        perf_opt_destroy();
+        perf_monitor_destroy();
+        resource_manager_destroy();
+        renderer_destroy();
+        window_manager_destroy();
+        return -1;
+    }
+    
+    // 初始化 Wayland
+    if (init_wayland() != 0) {
+        LOGE("Failed to initialize Wayland");
+        perf_monitor_destroy();
+        resource_manager_destroy();
+        renderer_destroy();
+        window_manager_destroy();
+        return -1;
+    }
+    
+    // 初始化输入系统
+    if (compositor_input_init() != 0) {
+        LOGE("Failed to initialize input system");
+        cleanup_wayland();
+        perf_monitor_destroy();
+        resource_manager_destroy();
+        renderer_destroy();
+        window_manager_destroy();
+        return -1;
+    }
+    
+    // 注册输入事件处理器
+    compositor_input_register_event_handler(handle_input_event, NULL);
+    
+    // 初始化 wlroots
+    if (init_wlroots() != 0) {
+        LOGE("Failed to initialize wlroots");
+        cleanup_wayland();
+        compositor_input_destroy();
+        perf_monitor_destroy();
+        resource_manager_destroy();
+        renderer_destroy();
+        window_manager_destroy();
+        return -1;
+    }
+    
+    // 初始化 Vulkan
+    if (vulkan_init(&g_state.vulkan, window, g_state.width, g_state.height) != 0) {
+        LOGE("Failed to initialize Vulkan");
+        cleanup_wlroots();
+        cleanup_wayland();
+        compositor_input_destroy();
+        perf_monitor_destroy();
+        resource_manager_destroy();
+        renderer_destroy();
+        window_manager_destroy();
+        return -1;
+    }
+    
+    // 启动 Xwayland
+    if (start_xwayland() != 0) {
+        LOGE("Failed to start Xwayland");
+        cleanup_vulkan();
+        cleanup_wlroots();
+        cleanup_wayland();
+        compositor_input_destroy();
+        perf_monitor_destroy();
+        resource_manager_destroy();
+        renderer_destroy();
+        window_manager_destroy();
+        return -1;
+    }
+    
+    g_state.initialized = true;
+    LOGI("Compositor initialized successfully");
+    return 0;
 }
 
-// 设置窗口Z顺序
-int compositor_set_window_z_order(const char* window_title, int z_order) {
-    if (!g_initialized || !window_title) {
-        return COMPOSITOR_ERROR_INVALID_ARGS;
+// 主循环单步
+int compositor_step(void) {
+    if (!g_state.initialized) {
+        return -1;
     }
     
-    bool window_found = false;
+    // 开始性能监控
+    perf_monitor_begin_frame();
     
-    // 查找并设置Xwayland窗口Z顺序
-    for (int i = 0; i < g_compositor_state.xwayland_state.window_count; i++) {
-        XwaylandWindowState* window = g_compositor_state.xwayland_state.windows[i];
-        if (window->title && strcmp(window->title, window_title) == 0) {
-            window->z_order = z_order;
-            window_found = true;
+    // 处理输入事件
+    perf_monitor_begin_measure(PERF_COUNTER_INPUT_TIME);
+    compositor_handle_input(0, 0, 0, 0, 0);
+    perf_monitor_end_measure(PERF_COUNTER_INPUT_TIME);
+    
+    // 处理 Wayland 事件
+    wl_event_loop_dispatch(g_state.event_loop, 0);
+    wl_display_flush_clients(g_state.display);
+    
+    // 更新窗口管理器
+    window_manager_update();
+    
+    // 更新渲染器
+    renderer_update();
+    
+    // 渲染帧
+    perf_monitor_begin_measure(PERF_COUNTER_RENDER_TIME);
+    int result = render_frame();
+    perf_monitor_end_measure(PERF_COUNTER_RENDER_TIME);
+    
+    if (result != 0) {
+        LOGE("Failed to render frame: %d", result);
+        perf_monitor_end_frame();
+        return result;
+    }
+    
+    // 更新性能监控器
+    perf_monitor_end_frame();
+    
+    // 更新内存使用统计
+    struct memory_stats mem_stats;
+    resource_get_memory_stats(&mem_stats);
+    perf_monitor_set_counter(PERF_COUNTER_MEMORY_USAGE, mem_stats.total_used / 1024.0f / 1024.0f); // MB
+    
+    return 0;
+}
+
+// 性能优化相关API
+int compositor_set_perf_opt_enabled(bool enabled) {
+    return perf_opt_set_enabled(enabled);
+}
+
+bool compositor_is_perf_opt_enabled(void) {
+    return perf_opt_is_enabled();
+}
+
+int compositor_set_perf_profile(enum perf_profile profile) {
+    return perf_opt_set_profile(profile);
+}
+
+enum perf_profile compositor_get_perf_profile(void) {
+    return perf_opt_get_profile();
+}
+
+int compositor_set_adaptive_fps_enabled(bool enabled) {
+    return perf_opt_set_adaptive_fps_enabled(enabled);
+}
+
+bool compositor_is_adaptive_fps_enabled(void) {
+    return perf_opt_is_adaptive_fps_enabled();
+}
+
+int compositor_set_adaptive_quality_enabled(bool enabled) {
+    return perf_opt_set_adaptive_quality_enabled(enabled);
+}
+
+bool compositor_is_adaptive_quality_enabled(void) {
+    return perf_opt_is_adaptive_quality_enabled();
+}
+
+int compositor_set_target_fps(int fps) {
+    return perf_opt_set_target_fps(fps);
+}
+
+int compositor_get_target_fps(void) {
+    return perf_opt_get_target_fps();
+}
+
+int compositor_set_quality_level(int level) {
+    return perf_opt_set_quality_level(level);
+}
+
+int compositor_get_quality_level(void) {
+    return perf_opt_get_quality_level();
+}
+
+int compositor_get_perf_opt_stats(struct perf_opt_stats *stats) {
+    return perf_opt_get_stats(stats);
+}
+
+// 游戏模式相关API
+int compositor_set_game_mode_enabled(bool enabled) {
+    return game_mode_set_enabled(enabled);
+}
+
+bool compositor_is_game_mode_enabled(void) {
+    return game_mode_is_enabled();
+}
+
+int compositor_set_game_type(enum game_type type) {
+    return game_mode_set_type(type);
+}
+
+enum game_type compositor_get_game_type(void) {
+    return game_mode_get_type();
+}
+
+int compositor_set_input_boost_enabled(bool enabled) {
+    return game_mode_set_input_boost_enabled(enabled);
+}
+
+bool compositor_is_input_boost_enabled(void) {
+    return game_mode_is_input_boost_enabled();
+}
+
+int compositor_set_priority_boost_enabled(bool enabled) {
+    return game_mode_set_priority_boost_enabled(enabled);
+}
+
+bool compositor_is_priority_boost_enabled(void) {
+    return game_mode_is_priority_boost_enabled();
+}
+
+int compositor_get_game_mode_stats(struct game_mode_stats *stats) {
+    return game_mode_get_stats(stats);
+}
+
+// 监控相关API
+int compositor_set_monitoring_enabled(bool enabled) {
+    return monitor_set_enabled(enabled);
+}
+
+bool compositor_is_monitoring_enabled(void) {
+    return monitor_is_enabled();
+}
+
+int compositor_set_auto_save_enabled(bool enabled) {
+    return monitor_set_auto_save_enabled(enabled);
+}
+
+bool compositor_is_auto_save_enabled(void) {
+    return monitor_is_auto_save_enabled();
+}
+
+int compositor_set_sample_interval(int interval_ms) {
+    return monitor_set_sample_interval(interval_ms);
+}
+
+int compositor_get_sample_interval(void) {
+    return monitor_get_sample_interval();
+}
+
+int compositor_set_report_interval(int interval_ms) {
+    return monitor_set_report_interval(interval_ms);
+}
+
+int compositor_get_report_interval(void) {
+    return monitor_get_report_interval();
+}
+
+int compositor_save_report(const char *path) {
+    return monitor_save_report(path);
+}
+
+int compositor_get_monitor_stats(struct monitor_stats *stats) {
+    return monitor_get_stats(stats);
+}
+
+int compositor_get_monitor_report(struct monitor_report *report) {
+    return monitor_get_report(report);
+}
+
+// 销毁合成器
+void compositor_destroy(void) {
+    if (!g_state.initialized) {
+        return;
+    }
+    
+    LOGI("Destroying compositor");
+    
+    // 销毁输入系统
+    if (g_state.cursor_mgr) {
+        wlr_xcursor_manager_destroy(g_state.cursor_mgr);
+        g_state.cursor_mgr = NULL;
+    }
+    
+    if (g_state.cursor) {
+        wlr_cursor_destroy(g_state.cursor);
+        g_state.cursor = NULL;
+    }
+    
+    if (g_state.seat) {
+        wlr_seat_destroy(g_state.seat);
+        g_state.seat = NULL;
+    }
+    
+    cleanup_xwayland();
+    cleanup_vulkan();
+    cleanup_wlroots();
+    
+    // 清理输入系统
+    compositor_input_destroy();
+    
+    // 清理监控模块
+    monitor_destroy();
+    
+    // 清理游戏模式模块
+    game_mode_destroy();
+    
+    // 清理性能优化模块
+    perf_opt_destroy();
+    
+    // 清理性能监控器
+    perf_monitor_destroy();
+    
+    // 清理资源管理器
+    resource_manager_destroy();
+    
+    // 清理渲染器
+    renderer_destroy();
+    
+    // 清理窗口管理器
+    window_manager_destroy();
+    
+    cleanup_wayland();
+    
+    memset(&g_state, 0, sizeof(g_state));
+    
+    LOGI("Compositor destroyed");
+}
+
+// 处理输入事件
+static void handle_input_event(const input_event_t* event, void* user_data) {
+    if (!event) {
+        return;
+    }
+    
+    switch (event->type) {
+        case INPUT_EVENT_TYPE_TOUCH_DOWN:
+            LOGI("Touch down: id=%u, x=%.2f, y=%.2f, pressure=%.2f", 
+                 event->data.touch.touch_id, event->data.touch.x, 
+                 event->data.touch.y, event->data.touch.pressure);
             break;
+        case INPUT_EVENT_TYPE_TOUCH_UP:
+            LOGI("Touch up: id=%u, x=%.2f, y=%.2f", 
+                 event->data.touch.touch_id, event->data.touch.x, event->data.touch.y);
+            break;
+        case INPUT_EVENT_TYPE_TOUCH_MOVE:
+            LOGI("Touch move: id=%u, x=%.2f, y=%.2f", 
+                 event->data.touch.touch_id, event->data.touch.x, event->data.touch.y);
+            break;
+        case INPUT_EVENT_TYPE_MOUSE_MOVE:
+            LOGI("Mouse move: x=%.2f, y=%.2f", event->data.mouse.x, event->data.mouse.y);
+            break;
+        case INPUT_EVENT_TYPE_MOUSE_BUTTON_DOWN:
+            LOGI("Mouse button down: button=%d, x=%.2f, y=%.2f", 
+                 event->data.mouse.button, event->data.mouse.x, event->data.mouse.y);
+            break;
+        case INPUT_EVENT_TYPE_MOUSE_BUTTON_UP:
+            LOGI("Mouse button up: button=%d, x=%.2f, y=%.2f", 
+                 event->data.mouse.button, event->data.mouse.x, event->data.mouse.y);
+            break;
+        case INPUT_EVENT_TYPE_MOUSE_SCROLL:
+            LOGI("Mouse scroll: dx=%.2f, dy=%.2f", 
+                 event->data.mouse.scroll_delta_x, event->data.mouse.scroll_delta_y);
+            break;
+        case INPUT_EVENT_TYPE_KEY_DOWN:
+            LOGI("Key down: keycode=%u, modifiers=%u", 
+                 event->data.keyboard.keycode, event->data.keyboard.modifiers);
+            break;
+        case INPUT_EVENT_TYPE_KEY_UP:
+            LOGI("Key up: keycode=%u, modifiers=%u", 
+                 event->data.keyboard.keycode, event->data.keyboard.modifiers);
+            break;
+        case INPUT_EVENT_TYPE_GAMEPAD_BUTTON_DOWN:
+            LOGI("Gamepad button down: device_id=%u, button=%d", 
+                 event->device_id, event->data.gamepad.button);
+            break;
+        case INPUT_EVENT_TYPE_GAMEPAD_BUTTON_UP:
+            LOGI("Gamepad button up: device_id=%u, button=%d", 
+                 event->device_id, event->data.gamepad.button);
+            break;
+        case INPUT_EVENT_TYPE_GAMEPAD_AXIS_MOVE:
+            LOGI("Gamepad axis move: device_id=%u, axis=%d, value=%.2f", 
+                 event->device_id, event->data.gamepad.axis, event->data.gamepad.axis_value);
+            break;
+        case INPUT_EVENT_TYPE_DEVICE_CONNECT:
+            LOGI("Device connected: id=%u, type=%d, name=%s", 
+                 event->device_id, event->device_type, "Unknown");
+            break;
+        case INPUT_EVENT_TYPE_DEVICE_DISCONNECT:
+            LOGI("Device disconnected: id=%u, type=%d", 
+                 event->device_id, event->device_type);
+            break;
+        default:
+            LOGI("Unknown input event type: %d", event->type);
+            break;
+    }
+}
+
+// 注入输入事件
+void compositor_handle_input(int type, int x, int y, int key, int state) {
+    if (!g_state.initialized || !g_state.seat) {
+        return;
+    }
+    
+    // 简化输入处理，仅支持基本鼠标事件
+    if (type == 0) { // 鼠标事件
+        wlr_cursor_move(g_state.cursor, NULL, x, y);
+        
+        if (state == 1) { // 按下
+            wlr_seat_pointer_notify_button(g_state.seat, 
+                time(NULL), BTN_LEFT, WLR_BUTTON_PRESSED);
+        } else if (state == 0) { // 释放
+            wlr_seat_pointer_notify_button(g_state.seat, 
+                time(NULL), BTN_LEFT, WLR_BUTTON_RELEASED);
         }
     }
+}
+
+// 处理Android输入事件
+void compositor_handle_android_input_event(int type, int x, int y, int state) {
+    // 将Android输入事件转换为输入系统事件
+    switch (type) {
+        case 0: // 触摸按下
+            compositor_input_inject_touch_event(0, (float)x, (float)y, 1.0f, true);
+            break;
+        case 1: // 触摸移动
+            compositor_input_inject_touch_event(0, (float)x, (float)y, 1.0f, true);
+            break;
+        case 2: // 触摸释放
+            compositor_input_inject_touch_event(0, (float)x, (float)y, 0.0f, false);
+            break;
+        default:
+            LOGI("Unknown input event type: %d", type);
+            break;
+    }
+}
+
+// 处理Android鼠标事件
+void compositor_handle_android_mouse_event(float x, float y, int button, bool down) {
+    compositor_input_inject_mouse_event(x, y, (mouse_button_t)button, down);
+}
+
+// 处理Android鼠标滚轮事件
+void compositor_handle_android_mouse_scroll(float delta_x, float delta_y) {
+    compositor_input_inject_mouse_scroll(delta_x, delta_y);
+}
+
+// 处理Android键盘事件
+void compositor_handle_android_keyboard_event(uint32_t keycode, uint32_t modifiers, bool down) {
+    compositor_input_inject_keyboard_event(keycode, (keyboard_modifier_t)modifiers, down);
+}
+
+// 处理Android游戏手柄按钮事件
+void compositor_handle_android_gamepad_button_event(uint32_t device_id, int button, bool down) {
+    compositor_input_inject_gamepad_button_event(device_id, (gamepad_button_t)button, down);
+}
+
+// 处理Android游戏手柄轴事件
+void compositor_handle_android_gamepad_axis_event(uint32_t device_id, int axis, float value) {
+    compositor_input_inject_gamepad_axis_event(device_id, (gamepad_axis_t)axis, value);
+}
+
+// 处理Android输入事件
+void compositor_handle_android_input_event(int type, int x, int y, int state) {
+    // 将Android输入事件转换为输入系统事件
+    switch (type) {
+        case 0: // 触摸按下
+            compositor_input_inject_touch_event(0, (float)x, (float)y, 1.0f, true);
+            break;
+        case 1: // 触摸移动
+            compositor_input_inject_touch_event(0, (float)x, (float)y, 1.0f, true);
+            break;
+        case 2: // 触摸释放
+            compositor_input_inject_touch_event(0, (float)x, (float)y, 0.0f, false);
+            break;
+        default:
+            LOGI("Unknown input event type: %d", type);
+            break;
+    }
+}
+
+// 设置窗口大小
+void compositor_set_size(int width, int height) {
+    if (!g_state.initialized || width <= 0 || height <= 0) {
+        return;
+    }
     
-    // 查找并设置Wayland窗口Z顺序
-    if (!window_found) {
-        for (int i = 0; i < g_compositor_state.wayland_state.window_count; i++) {
-            WaylandWindow* window = g_compositor_state.wayland_state.windows[i];
-            if (window->title && strcmp(window->title, window_title) == 0) {
-                window->z_order = z_order;
-                window_found = true;
+    g_state.width = width;
+    g_state.height = height;
+    
+    // 更新窗口管理器
+    window_manager_init(width, height);
+    
+    // 更新渲染器
+    renderer_set_size(width, height);
+    
+    // 重新创建 Vulkan 交换链
+    if (g_state.vulkan_initialized) {
+        if (vulkan_recreate_swapchain(&g_state.vulkan, width, height) != 0) {
+            LOGE("Failed to recreate Vulkan swapchain");
+            return;
+        }
+    }
+}
+
+// 获取当前帧率
+float compositor_get_fps(void) {
+    // 优先使用性能监控器的帧率
+    return perf_monitor_get_fps();
+}
+
+// 初始化 Wayland
+static int init_wayland(void) {
+    g_state.display = wl_display_create();
+    if (!g_state.display) {
+        LOGE("Failed to create Wayland display");
+        return -1;
+    }
+    
+    g_state.event_loop = wl_display_get_event_loop(g_state.display);
+    if (!g_state.event_loop) {
+        LOGE("Failed to get Wayland event loop");
+        return -1;
+    }
+    
+    g_state.wl_display_fd = wl_display_get_fd(g_state.display);
+    if (g_state.wl_display_fd < 0) {
+        LOGE("Failed to get Wayland display fd");
+        return -1;
+    }
+    
+    return 0;
+}
+
+// 初始化 wlroots
+static int init_wlroots(void) {
+    // 创建 headless 后端
+    g_state.backend = wlr_headless_backend_create(g_state.display);
+    if (!g_state.backend) {
+        LOGE("Failed to create headless backend");
+        return -1;
+    }
+    
+    // 创建渲染器
+    g_state.renderer = wlr_vk_renderer_create(g_state.display);
+    if (!g_state.renderer) {
+        LOGE("Failed to create Vulkan renderer");
+        return -1;
+    }
+    
+    // 启动后端
+    if (!wlr_backend_start(g_state.backend)) {
+        LOGE("Failed to start backend");
+        return -1;
+    }
+    
+    // 创建输出
+    g_state.output = wlr_headless_add_output(g_state.backend, g_state.width, g_state.height);
+    if (!g_state.output) {
+        LOGE("Failed to create output");
+        return -1;
+    }
+    
+    // 创建输出布局
+    g_state.output_layout = wlr_output_layout_create();
+    if (!g_state.output_layout) {
+        LOGE("Failed to create output layout");
+        return -1;
+    }
+    
+    // 创建场景
+    g_state.scene = wlr_scene_create();
+    if (!g_state.scene) {
+        LOGE("Failed to create scene");
+        return -1;
+    }
+    
+    // 创建场景输出
+    g_state.scene_output = wlr_scene_output_create(g_state.scene, g_state.output);
+    if (!g_state.scene_output) {
+        LOGE("Failed to create scene output");
+        return -1;
+    }
+    
+    // 创建 seat
+    g_state.seat = wlr_seat_create(g_state.display, "seat0");
+    if (!g_state.seat) {
+        LOGE("Failed to create seat");
+        return -1;
+    }
+    
+    // 创建光标
+    g_state.cursor = wlr_cursor_create();
+    if (!g_state.cursor) {
+        LOGE("Failed to create cursor");
+        return -1;
+    }
+    
+    // 创建光标管理器
+    g_state.cursor_mgr = wlr_xcursor_manager_create(NULL, 24);
+    if (!g_state.cursor_mgr) {
+        LOGE("Failed to create cursor manager");
+        return -1;
+    }
+    
+    return 0;
+}
+
+// 初始化 Vulkan
+static int init_vulkan(void) {
+    // 创建 Vulkan 实例
+    VkApplicationInfo app_info = {
+        .sType = VK_STRUCTURE_TYPE_APPLICATION_INFO,
+        .pNext = NULL,
+        .pApplicationName = "Compositor",
+        .applicationVersion = VK_MAKE_VERSION(1, 0, 0),
+        .pEngineName = "No Engine",
+        .engineVersion = VK_MAKE_VERSION(1, 0, 0),
+        .apiVersion = VK_API_VERSION_1_0
+    };
+    
+    const char* extensions[] = {
+        VK_KHR_SURFACE_EXTENSION_NAME,
+        VK_KHR_ANDROID_SURFACE_EXTENSION_NAME
+    };
+    
+    VkInstanceCreateInfo instance_create_info = {
+        .sType = VK_STRUCTURE_TYPE_INSTANCE_CREATE_INFO,
+        .pNext = NULL,
+        .flags = 0,
+        .pApplicationInfo = &app_info,
+        .enabledLayerCount = 0,
+        .ppEnabledLayerNames = NULL,
+        .enabledExtensionCount = 2,
+        .ppEnabledExtensionNames = extensions
+    };
+    
+    if (vkCreateInstance(&instance_create_info, NULL, &g_state.vk_instance) != VK_SUCCESS) {
+        LOGE("Failed to create Vulkan instance");
+        return -1;
+    }
+    
+    // 创建 Android 表面
+    VkAndroidSurfaceCreateInfoKHR surface_create_info = {
+        .sType = VK_STRUCTURE_TYPE_ANDROID_SURFACE_CREATE_INFO_KHR,
+        .pNext = NULL,
+        .flags = 0,
+        .window = (void*)g_state.window
+    };
+    
+    PFN_vkCreateAndroidSurfaceKHR vkCreateAndroidSurfaceKHR = 
+        (PFN_vkCreateAndroidSurfaceKHR)vkGetInstanceProcAddr(g_state.vk_instance, "vkCreateAndroidSurfaceKHR");
+    
+    if (!vkCreateAndroidSurfaceKHR || 
+        vkCreateAndroidSurfaceKHR(g_state.vk_instance, &surface_create_info, NULL, &g_state.vk_surface) != VK_SUCCESS) {
+        LOGE("Failed to create Android surface");
+        return -1;
+    }
+    
+    // 获取物理设备
+    uint32_t device_count = 0;
+    vkEnumeratePhysicalDevices(g_state.vk_instance, &device_count, NULL);
+    if (device_count == 0) {
+        LOGE("No Vulkan physical devices found");
+        return -1;
+    }
+    
+    VkPhysicalDevice* physical_devices = malloc(sizeof(VkPhysicalDevice) * device_count);
+    vkEnumeratePhysicalDevices(g_state.vk_instance, &device_count, physical_devices);
+    
+    // 简化：使用第一个物理设备
+    VkPhysicalDevice physical_device = physical_devices[0];
+    free(physical_devices);
+    
+    // 获取队列族索引
+    uint32_t queue_family_count = 0;
+    vkGetPhysicalDeviceQueueFamilyProperties(physical_device, &queue_family_count, NULL);
+    VkQueueFamilyProperties* queue_families = malloc(sizeof(VkQueueFamilyProperties) * queue_family_count);
+    vkGetPhysicalDeviceQueueFamilyProperties(physical_device, &queue_family_count, queue_families);
+    
+    uint32_t queue_family_index = 0;
+    for (; queue_family_index < queue_family_count; queue_family_index++) {
+        if (queue_families[queue_family_index].queueFlags & VK_QUEUE_GRAPHICS_BIT) {
+            VkBool32 present_support = false;
+            vkGetPhysicalDeviceSurfaceSupportKHR(physical_device, queue_family_index, g_state.vk_surface, &present_support);
+            if (present_support) {
                 break;
             }
         }
     }
     
-    if (!window_found) {
-        return COMPOSITOR_ERROR_WINDOW_NOT_FOUND;
+    free(queue_families);
+    
+    if (queue_family_index == queue_family_count) {
+        LOGE("No suitable queue family found");
+        return -1;
     }
     
-    // 重新排序窗口
-    compositor_sort_windows_by_z_order();
+    // 创建逻辑设备
+    float queue_priority = 1.0f;
+    VkDeviceQueueCreateInfo queue_create_info = {
+        .sType = VK_STRUCTURE_TYPE_DEVICE_QUEUE_CREATE_INFO,
+        .pNext = NULL,
+        .flags = 0,
+        .queueFamilyIndex = queue_family_index,
+        .queueCount = 1,
+        .pQueuePriorities = &queue_priority
+    };
     
-    // 更新下一个Z顺序值
-    if (z_order >= g_compositor_state.next_z_order) {
-        g_compositor_state.next_z_order = z_order + 1;
+    const char* device_extensions[] = {
+        VK_KHR_SWAPCHAIN_EXTENSION_NAME
+    };
+    
+    VkDeviceCreateInfo device_create_info = {
+        .sType = VK_STRUCTURE_TYPE_DEVICE_CREATE_INFO,
+        .pNext = NULL,
+        .flags = 0,
+        .queueCreateInfoCount = 1,
+        .pQueueCreateInfos = &queue_create_info,
+        .enabledLayerCount = 0,
+        .ppEnabledLayerNames = NULL,
+        .enabledExtensionCount = 1,
+        .ppEnabledExtensionNames = device_extensions,
+        .pEnabledFeatures = NULL
+    };
+    
+    if (vkCreateDevice(physical_device, &device_create_info, NULL, &g_state.vk_device) != VK_SUCCESS) {
+        LOGE("Failed to create Vulkan device");
+        return -1;
     }
     
-    // 标记需要重绘
-    compositor_schedule_redraw();
+    // 获取队列
+    vkGetDeviceQueue(g_state.vk_device, queue_family_index, 0, &g_state.vk_queue);
     
-    return COMPOSITOR_OK;
+    // 创建交换链
+    VkSwapchainCreateInfoKHR swapchain_create_info = {
+        .sType = VK_STRUCTURE_TYPE_SWAPCHAIN_CREATE_INFO_KHR,
+        .pNext = NULL,
+        .flags = 0,
+        .surface = g_state.vk_surface,
+        .minImageCount = 2,
+        .imageFormat = VK_FORMAT_R8G8B8A8_UNORM,
+        .imageColorSpace = VK_COLOR_SPACE_SRGB_NONLINEAR_KHR,
+        .imageExtent = {g_state.width, g_state.height},
+        .imageArrayLayers = 1,
+        .imageUsage = VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT,
+        .imageSharingMode = VK_SHARING_MODE_EXCLUSIVE,
+        .queueFamilyIndexCount = 0,
+        .pQueueFamilyIndices = NULL,
+        .preTransform = VK_SURFACE_TRANSFORM_IDENTITY_BIT_KHR,
+        .compositeAlpha = VK_COMPOSITE_ALPHA_OPAQUE_BIT_KHR,
+        .presentMode = VK_PRESENT_MODE_FIFO_KHR,
+        .clipped = VK_TRUE,
+        .oldSwapchain = VK_NULL_HANDLE
+    };
+    
+    if (vkCreateSwapchainKHR(g_state.vk_device, &swapchain_create_info, NULL, &g_state.vk_swapchain) != VK_SUCCESS) {
+        LOGE("Failed to create Vulkan swapchain");
+        return -1;
+    }
+    
+    // 获取交换链图像
+    vkGetSwapchainImagesKHR(g_state.vk_device, g_state.vk_swapchain, &g_state.vk_image_count, NULL);
+    g_state.vk_images = malloc(sizeof(VkImage) * g_state.vk_image_count);
+    vkGetSwapchainImagesKHR(g_state.vk_device, g_state.vk_swapchain, &g_state.vk_image_count, g_state.vk_images);
+    
+    // 创建图像视图
+    g_state.vk_image_views = malloc(sizeof(VkImageView) * g_state.vk_image_count);
+    for (uint32_t i = 0; i < g_state.vk_image_count; i++) {
+        VkImageViewCreateInfo image_view_create_info = {
+            .sType = VK_STRUCTURE_TYPE_IMAGE_VIEW_CREATE_INFO,
+            .pNext = NULL,
+            .flags = 0,
+            .image = g_state.vk_images[i],
+            .viewType = VK_IMAGE_VIEW_TYPE_2D,
+            .format = VK_FORMAT_R8G8B8A8_UNORM,
+            .components = {
+                .r = VK_COMPONENT_SWIZZLE_IDENTITY,
+                .g = VK_COMPONENT_SWIZZLE_IDENTITY,
+                .b = VK_COMPONENT_SWIZZLE_IDENTITY,
+                .a = VK_COMPONENT_SWIZZLE_IDENTITY
+            },
+            .subresourceRange = {
+                .aspectMask = VK_IMAGE_ASPECT_COLOR_BIT,
+                .baseMipLevel = 0,
+                .levelCount = 1,
+                .baseArrayLayer = 0,
+                .layerCount = 1
+            }
+        };
+        
+        if (vkCreateImageView(g_state.vk_device, &image_view_create_info, NULL, &g_state.vk_image_views[i]) != VK_SUCCESS) {
+            LOGE("Failed to create image view %d", i);
+            return -1;
+        }
+    }
+    
+    // 创建渲染通道
+    if (create_vulkan_render_pass() != 0) {
+        LOGE("Failed to create render pass");
+        return -1;
+    }
+    
+    // 创建帧缓冲区
+    if (create_vulkan_framebuffers() != 0) {
+        LOGE("Failed to create framebuffers");
+        return -1;
+    }
+    
+    // 创建命令缓冲区
+    if (create_vulkan_command_buffers() != 0) {
+        LOGE("Failed to create command buffers");
+        return -1;
+    }
+    
+    // 创建同步对象
+    if (create_vulkan_sync_objects() != 0) {
+        LOGE("Failed to create sync objects");
+        return -1;
+    }
+    
+    g_state.vulkan_initialized = true;
+    return 0;
 }
 
-// 查找位置处的表面
-void* find_surface_at_position(int x, int y, bool* out_is_wayland) {
-    if (!g_initialized || !out_is_wayland) {
-        return NULL;
+// 启动 Xwayland
+static int start_xwayland(void) {
+    // 创建 socket 对
+    int sv[2];
+    if (socketpair(AF_UNIX, SOCK_STREAM | SOCK_CLOEXEC, 0, sv) != 0) {
+        LOGE("Failed to create socket pair: %s", strerror(errno));
+        return -1;
     }
     
-    // 从顶层开始查找（Z值较大的窗口在上方）
-    // 先查找Wayland窗口（反向遍历，从顶层到底层）
-    WaylandState* wayland_state = &g_compositor_state.wayland_state;
-    for (int i = wayland_state->window_count - 1; i >= 0; i--) {
-        WaylandWindow* window = wayland_state->windows[i];
-        if (window->state != WINDOW_STATE_MINIMIZED && 
-            x >= window->x && x <= window->x + window->width + g_compositor_state.config.window_border_width * 2 &&
-            y >= window->y && y <= window->y + window->height + g_compositor_state.config.window_border_width * 2 + g_compositor_state.config.window_titlebar_height) {
-            *out_is_wayland = true;
-            return window;
-        }
+    // 设置 Wayland 显示 fd
+    if (wl_display_add_socket_fd(g_state.display, sv[0]) != 0) {
+        LOGE("Failed to add socket to Wayland display");
+        close(sv[0]);
+        close(sv[1]);
+        return -1;
     }
     
-    // 再查找Xwayland窗口（反向遍历，从顶层到底层）
-    XwaylandState* xwayland_state = &g_compositor_state.xwayland_state;
-    for (int i = xwayland_state->window_count - 1; i >= 0; i--) {
-        XwaylandWindowState* window = xwayland_state->windows[i];
-        if (window->state != WINDOW_STATE_MINIMIZED && 
-            x >= window->x && x <= window->x + window->width + g_compositor_state.config.window_border_width * 2 &&
-            y >= window->y && y <= window->y + window->height + g_compositor_state.config.window_border_width * 2 + g_compositor_state.config.window_titlebar_height) {
-            *out_is_wayland = false;
-            return window;
-        }
+    // 生成显示名称
+    snprintf(g_state.xwayland_display, sizeof(g_state.xwayland_display), "wayland-%d", getpid());
+    
+    // 设置 Xwayland 环境变量
+    setenv("WAYLAND_DISPLAY", g_state.xwayland_display, 1);
+    setenv("DISPLAY", ":0", 1);
+    
+    // 启动 Xwayland 进程
+    g_state.xwayland_pid = fork();
+    if (g_state.xwayland_pid == 0) {
+        // 子进程：Xwayland
+        char fd_str[16];
+        snprintf(fd_str, sizeof(fd_str), "%d", sv[1]);
+        
+        // 简化：假设 Xwayland 在 /system/bin/xwayland
+        execl("/system/bin/xwayland", "xwayland", 
+              "-displayfd", fd_str, 
+              "-rootless", 
+              "-terminate", 
+              "-noreset", 
+              "-listen", fd_str,
+              NULL);
+        
+        // 如果执行到这里，说明 exec 失败
+        LOGE("Failed to exec Xwayland: %s", strerror(errno));
+        exit(1);
+    } else if (g_state.xwayland_pid < 0) {
+        LOGE("Failed to fork for Xwayland: %s", strerror(errno));
+        close(sv[0]);
+        close(sv[1]);
+        return -1;
     }
     
-    *out_is_wayland = false;
-    return NULL;
+    // 父进程：合成器
+    close(sv[1]);
+    
+    // 设置 SIGCHLD 处理器，以便在 Xwayland 退出时收到通知
+    struct sigaction sa;
+    sa.sa_handler = handle_xwayland_dead;
+    sigemptyset(&sa.sa_mask);
+    sa.sa_flags = SA_RESTART;
+    sigaction(SIGCHLD, &sa, NULL);
+    
+    g_state.xwayland_started = true;
+    LOGI("Xwayland started with PID %d", g_state.xwayland_pid);
+    return 0;
 }
 
-// 获取当前状态（仅供内部使用）
-CompositorState* compositor_get_state(void) {
-    return g_initialized ? &g_compositor_state : NULL;
+// 处理 Xwayland 死亡
+static void handle_xwayland_dead(int sig) {
+    int status;
+    pid_t pid = waitpid(g_state.xwayland_pid, &status, WNOHANG);
+    
+    if (pid == g_state.xwayland_pid) {
+        LOGE("Xwayland died with status %d", status);
+        g_state.xwayland_started = false;
+        g_state.xwayland_pid = 0;
+    }
 }
 
-// 检查是否已初始化
-bool compositor_is_initialized(void) {
-    return g_initialized;
+// 创建 Vulkan 渲染通道
+static int create_vulkan_render_pass(void) {
+    VkAttachmentDescription color_attachment = {
+        .flags = 0,
+        .format = VK_FORMAT_R8G8B8A8_UNORM,
+        .samples = VK_SAMPLE_COUNT_1_BIT,
+        .loadOp = VK_ATTACHMENT_LOAD_OP_CLEAR,
+        .storeOp = VK_ATTACHMENT_STORE_OP_STORE,
+        .stencilLoadOp = VK_ATTACHMENT_LOAD_OP_DONT_CARE,
+        .stencilStoreOp = VK_ATTACHMENT_STORE_OP_DONT_CARE,
+        .initialLayout = VK_IMAGE_LAYOUT_UNDEFINED,
+        .finalLayout = VK_IMAGE_LAYOUT_PRESENT_SRC_KHR
+    };
+    
+    VkAttachmentReference color_attachment_ref = {
+        .attachment = 0,
+        .layout = VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL
+    };
+    
+    VkSubpassDescription subpass = {
+        .flags = 0,
+        .pipelineBindPoint = VK_PIPELINE_BIND_POINT_GRAPHICS,
+        .inputAttachmentCount = 0,
+        .pInputAttachments = NULL,
+        .colorAttachmentCount = 1,
+        .pColorAttachments = &color_attachment_ref,
+        .pResolveAttachments = NULL,
+        .pDepthStencilAttachment = NULL,
+        .preserveAttachmentCount = 0,
+        .pPreserveAttachments = NULL
+    };
+    
+    VkSubpassDependency dependency = {
+        .srcSubpass = VK_SUBPASS_EXTERNAL,
+        .dstSubpass = 0,
+        .srcStageMask = VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT,
+        .dstStageMask = VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT,
+        .srcAccessMask = 0,
+        .dstAccessMask = VK_ACCESS_COLOR_ATTACHMENT_WRITE_BIT,
+        .dependencyFlags = 0
+    };
+    
+    VkRenderPassCreateInfo render_pass_info = {
+        .sType = VK_STRUCTURE_TYPE_RENDER_PASS_CREATE_INFO,
+        .pNext = NULL,
+        .flags = 0,
+        .attachmentCount = 1,
+        .pAttachments = &color_attachment,
+        .subpassCount = 1,
+        .pSubpasses = &subpass,
+        .dependencyCount = 1,
+        .pDependencies = &dependency
+    };
+    
+    if (vkCreateRenderPass(g_state.vk_device, &render_pass_info, NULL, &g_state.vk_render_pass) != VK_SUCCESS) {
+        LOGE("Failed to create render pass");
+        return -1;
+    }
+    
+    return 0;
 }
 
-// 工作区管理相关函数现在在 compositor_workspace.c 中实现
-
-// 将窗口移动到指定工作区
-// find_window_by_title 辅助函数现在在 compositor_workspace.c 中实现
-// compositor_move_window_to_workspace 函数现在在 compositor_workspace.c 中实现
-
-// collect_visible_windows 辅助函数现在在 compositor_workspace.c 中实现
-// compositor_tile_windows 函数现在在 compositor_workspace.c 中实现
-
-// compositor_cascade_windows 函数现在在 compositor_workspace.c 中实现
-
-// compositor_group_windows 和 compositor_ungroup_windows 函数现在在 compositor_workspace.c 中实现
-
-// compositor_close_all_windows 函数现在在 compositor_workspace.c 中实现
-
-// 最小化所有窗口
-int compositor_minimize_all_windows() {
-    if (!g_initialized) {
-        set_error(COMPOSITOR_ERROR_NOT_INITIALIZED, "Compositor not initialized");
-        return COMPOSITOR_ERROR_NOT_INITIALIZED;
-    }
+// 创建 Vulkan 帧缓冲区
+static int create_vulkan_framebuffers(void) {
+    g_state.vk_framebuffers = malloc(sizeof(VkFramebuffer) * g_state.vk_image_count);
     
-    // 最小化当前工作区的所有窗口
-    int minimized_count = 0;
-    int i;
-    
-    // 最小化Xwayland窗口
-    for (i = 0; i < g_compositor_state.xwayland_state.window_count; i++) {
-        XwaylandWindowState* window = g_compositor_state.xwayland_state.windows[i];
-        if (window->workspace_id == g_compositor_state.active_workspace || window->is_sticky) {
-            window->is_minimized = true;
-            window->state = WINDOW_STATE_MINIMIZED;
-            minimized_count++;
+    for (uint32_t i = 0; i < g_state.vk_image_count; i++) {
+        VkImageView attachments[] = {
+            g_state.vk_image_views[i]
+        };
+        
+        VkFramebufferCreateInfo framebuffer_info = {
+            .sType = VK_STRUCTURE_TYPE_FRAMEBUFFER_CREATE_INFO,
+            .pNext = NULL,
+            .flags = 0,
+            .renderPass = g_state.vk_render_pass,
+            .attachmentCount = 1,
+            .pAttachments = attachments,
+            .width = g_state.width,
+            .height = g_state.height,
+            .layers = 1
+        };
+        
+        if (vkCreateFramebuffer(g_state.vk_device, &framebuffer_info, NULL, &g_state.vk_framebuffers[i]) != VK_SUCCESS) {
+            LOGE("Failed to create framebuffer %d", i);
+            return -1;
         }
     }
     
-    // 最小化Wayland窗口
-    for (i = 0; i < g_compositor_state.wayland_state.window_count; i++) {
-        WaylandWindow* window = g_compositor_state.wayland_state.windows[i];
-        if (window->workspace_id == g_compositor_state.active_workspace || window->is_sticky) {
-            window->is_minimized = true;
-            window->state = WINDOW_STATE_MINIMIZED;
-            minimized_count++;
-        }
-    }
-    
-    // 标记需要重绘
-    compositor_schedule_redraw();
-    
-    log_message(COMPOSITOR_LOG_INFO, "Minimized %d windows", minimized_count);
-    
-    return COMPOSITOR_OK;
+    return 0;
 }
 
-// 恢复所有窗口
-int compositor_restore_all_windows() {
-    if (!g_initialized) {
-        set_error(COMPOSITOR_ERROR_NOT_INITIALIZED, "Compositor not initialized");
-        return COMPOSITOR_ERROR_NOT_INITIALIZED;
+// 创建 Vulkan 命令缓冲区
+static int create_vulkan_command_buffers(void) {
+    VkCommandPoolCreateInfo pool_info = {
+        .sType = VK_STRUCTURE_TYPE_COMMAND_POOL_CREATE_INFO,
+        .pNext = NULL,
+        .flags = 0,
+        .queueFamilyIndex = 0 // 简化：假设使用第一个队列族
+    };
+    
+    if (vkCreateCommandPool(g_state.vk_device, &pool_info, NULL, &g_state.vk_command_pool) != VK_SUCCESS) {
+        LOGE("Failed to create command pool");
+        return -1;
     }
     
-    // 恢复当前工作区的所有窗口
-    int restored_count = 0;
-    int i;
+    g_state.vk_command_buffers = malloc(sizeof(VkCommandBuffer) * g_state.vk_image_count);
     
-    // 恢复Xwayland窗口
-    for (i = 0; i < g_compositor_state.xwayland_state.window_count; i++) {
-        XwaylandWindowState* window = g_compositor_state.xwayland_state.windows[i];
-        if (window->workspace_id == g_compositor_state.active_workspace || window->is_sticky) {
-            window->is_minimized = false;
-            window->state = WINDOW_STATE_NORMAL;
-            restored_count++;
+    VkCommandBufferAllocateInfo alloc_info = {
+        .sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_ALLOCATE_INFO,
+        .pNext = NULL,
+        .commandPool = g_state.vk_command_pool,
+        .level = VK_COMMAND_BUFFER_LEVEL_PRIMARY,
+        .commandBufferCount = g_state.vk_image_count
+    };
+    
+    if (vkAllocateCommandBuffers(g_state.vk_device, &alloc_info, g_state.vk_command_buffers) != VK_SUCCESS) {
+        LOGE("Failed to allocate command buffers");
+        return -1;
+    }
+    
+    return 0;
+}
+
+// 创建 Vulkan 同步对象
+static int create_vulkan_sync_objects(void) {
+    g_state.vk_image_available_semaphores = malloc(sizeof(VkSemaphore) * g_state.vk_image_count);
+    g_state.vk_render_finished_semaphores = malloc(sizeof(VkSemaphore) * g_state.vk_image_count);
+    g_state.vk_in_flight_fences = malloc(sizeof(VkFence) * g_state.vk_image_count);
+    
+    VkSemaphoreCreateInfo semaphore_info = {
+        .sType = VK_STRUCTURE_TYPE_SEMAPHORE_CREATE_INFO,
+        .pNext = NULL,
+        .flags = 0
+    };
+    
+    VkFenceCreateInfo fence_info = {
+        .sType = VK_STRUCTURE_TYPE_FENCE_CREATE_INFO,
+        .pNext = NULL,
+        .flags = VK_FENCE_CREATE_SIGNALED_BIT
+    };
+    
+    for (uint32_t i = 0; i < g_state.vk_image_count; i++) {
+        if (vkCreateSemaphore(g_state.vk_device, &semaphore_info, NULL, &g_state.vk_image_available_semaphores[i]) != VK_SUCCESS ||
+            vkCreateSemaphore(g_state.vk_device, &semaphore_info, NULL, &g_state.vk_render_finished_semaphores[i]) != VK_SUCCESS ||
+            vkCreateFence(g_state.vk_device, &fence_info, NULL, &g_state.vk_in_flight_fences[i]) != VK_SUCCESS) {
+            LOGE("Failed to create sync objects for frame %d", i);
+            return -1;
         }
     }
     
-    // 恢复Wayland窗口
-    for (i = 0; i < g_compositor_state.wayland_state.window_count; i++) {
-        WaylandWindow* window = g_compositor_state.wayland_state.windows[i];
-        if (window->workspace_id == g_compositor_state.active_workspace || window->is_sticky) {
-            window->is_minimized = false;
-            window->state = WINDOW_STATE_NORMAL;
-            restored_count++;
+    return 0;
+}
+
+// 清理Vulkan资源
+static void cleanup_vulkan(void) {
+    vulkan_destroy(&g_state.vulkan);
+}
+
+// 清理 Wayland 资源
+static void cleanup_wayland(void) {
+    if (g_state.display) {
+        wl_display_destroy(g_state.display);
+        g_state.display = NULL;
+    }
+}
+
+// 清理 wlroots 资源
+static void cleanup_wlroots(void) {
+    if (g_state.cursor_mgr) {
+        wlr_xcursor_manager_destroy(g_state.cursor_mgr);
+        g_state.cursor_mgr = NULL;
+    }
+    
+    if (g_state.cursor) {
+        wlr_cursor_destroy(g_state.cursor);
+        g_state.cursor = NULL;
+    }
+    
+    if (g_state.seat) {
+        wlr_seat_destroy(g_state.seat);
+        g_state.seat = NULL;
+    }
+    
+    if (g_state.scene_output) {
+        wlr_scene_output_destroy(g_state.scene_output);
+        g_state.scene_output = NULL;
+    }
+    
+    if (g_state.scene) {
+        wlr_scene_destroy(g_state.scene);
+        g_state.scene = NULL;
+    }
+    
+    if (g_state.output_layout) {
+        wlr_output_layout_destroy(g_state.output_layout);
+        g_state.output_layout = NULL;
+    }
+    
+    if (g_state.output) {
+        wlr_output_destroy(g_state.output);
+        g_state.output = NULL;
+    }
+    
+    if (g_state.renderer) {
+        wlr_renderer_destroy(g_state.renderer);
+        g_state.renderer = NULL;
+    }
+    
+    if (g_state.backend) {
+        wlr_backend_destroy(g_state.backend);
+        g_state.backend = NULL;
+    }
+}
+
+// 清理 Xwayland 资源
+static void cleanup_xwayland(void) {
+    if (g_state.xwayland_started && g_state.xwayland_pid > 0) {
+        // 发送 SIGTERM 信号
+        kill(g_state.xwayland_pid, SIGTERM);
+        
+        // 等待进程退出
+        int status;
+        waitpid(g_state.xwayland_pid, &status, 0);
+        
+        g_state.xwayland_started = false;
+        g_state.xwayland_pid = 0;
+    }
+}
+
+// 渲染帧
+static int render_frame(void) {
+    struct timespec start_time, end_time;
+    int ret;
+    
+    if (!g_state.vulkan_initialized) {
+        return -1;
+    }
+    
+    // 记录开始时间
+    clock_gettime(CLOCK_MONOTONIC, &start_time);
+    
+    // 更新性能优化模块
+    perf_opt_update();
+    
+    // 更新游戏模式模块
+    game_mode_update();
+    
+    // 更新监控模块
+    monitor_update();
+    
+    // 开始性能监控
+    perf_monitor_begin_measure(PERF_COUNTER_RENDER_TIME);
+    
+    // 应用性能优化设置
+    struct perf_opt_settings opt_settings;
+    if (perf_opt_get_settings(&opt_settings) == 0) {
+        // 根据性能优化设置调整渲染参数
+        renderer_set_quality(opt_settings.quality_level);
+        renderer_set_max_fps(opt_settings.target_fps);
+    }
+    
+    // 应用游戏模式设置
+    if (game_mode_is_enabled()) {
+        struct game_mode_settings game_settings;
+        if (game_mode_get_settings(&game_settings) == 0) {
+            // 根据游戏模式设置调整渲染参数
+            renderer_set_input_boost_enabled(game_settings.input_boost);
+            renderer_set_priority_boost_enabled(game_settings.priority_boost);
         }
     }
     
-    // 标记需要重绘
-    compositor_schedule_redraw();
+    uint32_t image_index;
     
-    log_message(COMPOSITOR_LOG_INFO, "Restored %d windows", restored_count);
+    // 开始渲染帧
+    if (vulkan_begin_frame(&g_state.vulkan, &image_index) != 0) {
+        LOGE("Failed to begin frame");
+        perf_monitor_end_measure(PERF_COUNTER_RENDER_TIME);
+        return -1;
+    }
     
-    return COMPOSITOR_OK;
+    // 获取命令缓冲区
+    VkCommandBuffer cmd_buffer = vulkan_get_command_buffer(&g_state.vulkan, image_index);
+    if (cmd_buffer == VK_NULL_HANDLE) {
+        LOGE("Failed to get command buffer");
+        perf_monitor_end_measure(PERF_COUNTER_RENDER_TIME);
+        return -1;
+    }
+    
+    // 记录命令缓冲区
+    VkCommandBufferBeginInfo begin_info = {
+        .sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO,
+        .pNext = NULL,
+        .flags = 0,
+        .pInheritanceInfo = NULL
+    };
+    
+    VkResult result = vkBeginCommandBuffer(cmd_buffer, &begin_info);
+    if (result != VK_SUCCESS) {
+        LOGE("Failed to begin command buffer: %d", result);
+        perf_monitor_end_measure(PERF_COUNTER_RENDER_TIME);
+        return -1;
+    }
+    
+    // 开始渲染通道
+    VkRenderPassBeginInfo render_pass_info = {
+        .sType = VK_STRUCTURE_TYPE_RENDER_PASS_BEGIN_INFO,
+        .pNext = NULL,
+        .renderPass = g_state.vulkan.render_pass,
+        .framebuffer = vulkan_get_current_framebuffer(&g_state.vulkan, image_index),
+        .renderArea = {
+            .offset = {0, 0},
+            .extent = {g_state.width, g_state.height}
+        },
+        .clearValueCount = 1,
+        .pClearValues = &(VkClearValue){.color = {{0.0f, 0.0f, 0.0f, 1.0f}}}
+    };
+    
+    vkCmdBeginRenderPass(cmd_buffer, &render_pass_info, VK_SUBPASS_CONTENTS_INLINE);
+    
+    // 这里可以添加实际的渲染命令
+    
+    vkCmdEndRenderPass(cmd_buffer);
+    
+    result = vkEndCommandBuffer(cmd_buffer);
+    if (result != VK_SUCCESS) {
+        LOGE("Failed to end command buffer: %d", result);
+        perf_monitor_end_measure(PERF_COUNTER_RENDER_TIME);
+        return -1;
+    }
+    
+    // 结束渲染帧
+    if (vulkan_end_frame(&g_state.vulkan, image_index) != 0) {
+        LOGE("Failed to end frame");
+        perf_monitor_end_measure(PERF_COUNTER_RENDER_TIME);
+        return -1;
+    }
+    
+    // 结束性能监控
+    perf_monitor_end_measure(PERF_COUNTER_RENDER_TIME);
+    
+    // 记录结束时间并计算帧时间
+    clock_gettime(CLOCK_MONOTONIC, &end_time);
+    long frame_time_ms = (end_time.tv_sec - start_time.tv_sec) * 1000 + 
+                         (end_time.tv_nsec - start_time.tv_nsec) / 1000000;
+    
+    // 记录帧时间到性能优化模块
+    perf_opt_record_frame_time(frame_time_ms);
+    
+    // 记录帧时间到监控模块
+    monitor_record_frame_time(frame_time_ms);
+    
+    // 检查性能警告
+    struct perf_warning warning;
+    if (perf_monitor_check_warning(&warning) == 0) {
+        LOGW("Performance warning: %s (value: %.2f, threshold: %.2f)", 
+             warning.message, warning.value, warning.threshold);
+        
+        // 将警告信息发送到监控模块
+        monitor_record_event("Performance Warning", warning.message);
+    }
+    
+    return 0;
+}
+
+// 更新 FPS
+static void update_fps(void) {
+    g_state.frame_count++;
+    
+    uint64_t current_time = time(NULL) * 1000; // 简化：使用秒级时间
+    if (current_time - g_state.last_frame_time >= 1000) {
+        g_state.fps = (float)g_state.frame_count;
+        g_state.frame_count = 0;
+        g_state.last_frame_time = current_time;
+        
+        LOGD("FPS: %.1f", g_state.fps);
+    }
 }

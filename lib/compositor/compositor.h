@@ -2,148 +2,19 @@
 #define COMPOSITOR_H
 
 #include <android/native_window.h>
-#include <stdint.h>
 #include <stdbool.h>
-#include "compositor_render.h" // 包含渲染模块头文件
-#include "compositor_dirty.h" // 包含脏区域管理头文件
-
-// 前向声明
-struct CompositorConfig;
-typedef struct CompositorConfig CompositorConfig;
-
-// 窗口状态枚举
-typedef enum {
-    WINDOW_STATE_NORMAL = 0,
-    WINDOW_STATE_MINIMIZED,
-    WINDOW_STATE_MAXIMIZED,
-    WINDOW_STATE_FULLSCREEN
-} WindowState;
-
-// 脏区域结构
-typedef struct {
-    int32_t x, y;
-    int32_t width, height;
-} DirtyRect;
-
-// 前向声明
-struct WindowGroup;
-typedef struct WindowGroup WindowGroup;
-
-struct Workspace;
-typedef struct Workspace Workspace;
-
-struct XwaylandWindowState;
-typedef struct XwaylandWindowState XwaylandWindowState;
-
-struct WaylandWindow;
-typedef struct WaylandWindow WaylandWindow;
-
-// Xwayland窗口管理状态
-typedef struct {
-    XwaylandWindowState** windows;
-    int32_t window_count;
-    int32_t max_windows;
-    int32_t capacity;          // 实际分配的容量（支持动态扩容）
-} XwaylandState;
-
-// Wayland窗口管理状态
-typedef struct {
-    WaylandWindow** windows;
-    int32_t window_count;
-    int32_t max_windows;
-    int32_t capacity;          // 实际分配的容量（支持动态扩容）
-} WaylandState;
-
-// 窗口平铺模式
-enum {
-    TILE_MODE_NONE = 0,       // 无平铺
-    TILE_MODE_HORIZONTAL = 1, // 水平平铺
-    TILE_MODE_VERTICAL = 2,   // 垂直平铺
-    TILE_MODE_GRID = 3        // 网格平铺
-};
-
-// 合成器状态
-typedef struct CompositorState {
-    // 窗口和显示
-    ANativeWindow* window;
-    int32_t width;
-    int32_t height;
-    bool needs_redraw;
-    
-    // 配置
-    CompositorConfig config;
-    
-    // 窗口管理
-    XwaylandState xwayland_state;
-    WaylandState wayland_state;
-    void* active_window;
-    bool active_window_is_wayland;
-    int32_t next_z_order;      // 下一个窗口的Z轴顺序
-    
-    // 多窗口管理增强
-    Workspace* workspaces;
-    int32_t workspace_count;
-    int32_t active_workspace;
-    WindowGroup* window_groups;
-    int32_t window_group_count;
-    int32_t tile_mode;         // 窗口平铺模式
-    
-    // 窗口预览和快照
-    void** window_snapshots;
-    bool* snapshot_is_wayland;
-    int32_t snapshot_count;
-    
-    // 渲染和输入状态
-    void* vulkan_state;
-    void* input_state;
-    
-    // 性能统计
-    int64_t last_frame_time;
-    float fps;
-    int64_t frame_count;       // 总帧数
-    int64_t total_render_time; // 总渲染时间
-    float avg_frame_time;      // 平均帧时间
-    
-    // 内存管理
-    size_t total_allocated;    // 总分配内存
-    size_t peak_allocated;     // 峰值内存使用
-    
-    // 渲染优化
-    DirtyRect* dirty_rects;    // 全局脏区域
-    int32_t dirty_rect_count;  // 脏区域数量
-    bool use_dirty_rect_optimization; // 是否启用脏区域优化
-    
-    // 错误状态
-    int last_error;
-    char error_message[256];
-    
-    // 拖动状态
-    void* dragging_window;
-    bool is_dragging;
-    int32_t drag_offset_x;
-    int32_t drag_offset_y;
-    
-    // 手势状态
-    bool is_gesturing;
-    int last_gesture_type;
-} CompositorState;
-
-// 包含拆分后的头文件
-#include "compositor_config.h"
-#include "compositor_window.h"
-#include "compositor_input.h"
-#include "compositor_vulkan.h"
-#include "compositor_utils.h"
+#include "compositor_perf_opt.h"
+#include "compositor_game.h"
+#include "compositor_monitor.h"
 
 #ifdef __cplusplus
-extern "C"  {
+extern "C" {
 #endif
 
 // 初始化合成器
 // - window: 来自 GameActivity.app->window
 // - width/height: 建议从 ANativeWindow_getWidth/Height 获取
-// - config: 配置参数，NULL 则使用默认配置
-int compositor_init(ANativeWindow* window, int width, int height, CompositorConfig* config);
+int compositor_init(ANativeWindow* window, int width, int height);
 
 // 主循环单步（应在 GameActivity 的渲染线程中循环调用）
 // 返回 0 表示正常，非 0 表示错误
@@ -152,55 +23,71 @@ int compositor_step(void);
 // 销毁合成器
 void compositor_destroy(void);
 
+// 注入输入事件（触摸、键盘等）
+void compositor_handle_input(int type, int x, int y, int key, int state);
+
+// 处理Android输入事件
+void compositor_handle_android_input_event(int type, int x, int y, int state);
+
+// 处理Android鼠标事件
+void compositor_handle_android_mouse_event(float x, float y, int button, bool down);
+
+// 处理Android鼠标滚轮事件
+void compositor_handle_android_mouse_scroll(float delta_x, float delta_y);
+
+// 处理Android键盘事件
+void compositor_handle_android_keyboard_event(uint32_t keycode, uint32_t modifiers, bool down);
+
+// 处理Android游戏手柄按钮事件
+void compositor_handle_android_gamepad_button_event(uint32_t device_id, int button, bool down);
+
+// 处理Android游戏手柄轴事件
+void compositor_handle_android_gamepad_axis_event(uint32_t device_id, int axis, float value);
+
 // 设置窗口大小
-// - width/height: 新的窗口大小
-// 返回: 0 成功，非 0 失败
-int compositor_resize(int width, int height);
+void compositor_set_size(int width, int height);
 
-// 获取活动窗口标题
-// 返回: 当前活动窗口的标题，如果没有活动窗口则返回NULL
-const char* compositor_get_active_window_title();
+// 获取当前帧率
+float compositor_get_fps(void);
 
-// 触发重绘
-void compositor_schedule_redraw(void);
+// 性能优化相关API
+int compositor_set_perf_opt_enabled(bool enabled);
+bool compositor_is_perf_opt_enabled(void);
+int compositor_set_perf_profile(enum perf_profile profile);
+enum perf_profile compositor_get_perf_profile(void);
+int compositor_set_adaptive_fps_enabled(bool enabled);
+bool compositor_is_adaptive_fps_enabled(void);
+int compositor_set_adaptive_quality_enabled(bool enabled);
+bool compositor_is_adaptive_quality_enabled(void);
+int compositor_set_target_fps(int fps);
+int compositor_get_target_fps(void);
+int compositor_set_quality_level(int level);
+int compositor_get_quality_level(void);
+int compositor_get_perf_opt_stats(struct perf_opt_stats *stats);
 
-// 标记脏区域
-void compositor_mark_dirty_rect(int x, int y, int width, int height);
+// 游戏模式相关API
+int compositor_set_game_mode_enabled(bool enabled);
+bool compositor_is_game_mode_enabled(void);
+int compositor_set_game_type(enum game_type type);
+enum game_type compositor_get_game_type(void);
+int compositor_set_input_boost_enabled(bool enabled);
+bool compositor_is_input_boost_enabled(void);
+int compositor_set_priority_boost_enabled(bool enabled);
+bool compositor_is_priority_boost_enabled(void);
+int compositor_get_game_mode_stats(struct game_mode_stats *stats);
 
-// 清除脏区域
-void compositor_clear_dirty_rects(void);
-
-// 内部使用函数，获取当前状态
-CompositorState* compositor_get_state(void);
-
-// 检查是否已初始化
-bool compositor_is_initialized(void);
-
-// 查找位置处的表面
-void* find_surface_at_position(int x, int y, bool* out_is_wayland);
-
-// 按Z顺序排序窗口
-void compositor_sort_windows_by_z_order(void);
-
-// 获取窗口Z顺序
-int compositor_get_window_z_order(const char* window_title);
-
-// 设置窗口Z顺序
-int compositor_set_window_z_order(const char* window_title, int z_order);
-
-// 多窗口管理增强函数
-int compositor_create_workspace(const char* name);
-int compositor_switch_workspace(int workspace_index);
-int compositor_move_window_to_workspace(const char* window_title, int workspace_index);
-int compositor_group_windows(const char** window_titles, int count, const char* group_name);
-int compositor_ungroup_windows(const char* group_name);
-int compositor_tile_windows(int tile_mode);
-int compositor_cascade_windows();
-int compositor_take_window_snapshot(const char* window_title);
-int compositor_show_window_previews();
-int compositor_close_all_windows();
-int compositor_minimize_all_windows();
-int compositor_restore_all_windows();
+// 监控相关API
+int compositor_set_monitoring_enabled(bool enabled);
+bool compositor_is_monitoring_enabled(void);
+int compositor_set_auto_save_enabled(bool enabled);
+bool compositor_is_auto_save_enabled(void);
+int compositor_set_sample_interval(int interval_ms);
+int compositor_get_sample_interval(void);
+int compositor_set_report_interval(int interval_ms);
+int compositor_get_report_interval(void);
+int compositor_save_report(const char *path);
+int compositor_get_monitor_stats(struct monitor_stats *stats);
+int compositor_get_monitor_report(struct monitor_report *report);
 
 #ifdef __cplusplus
 }

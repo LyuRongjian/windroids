@@ -1,1066 +1,438 @@
 #include "compositor_window.h"
-#include "compositor_utils.h"
-#include "compositor.h"
-#include <string.h>
 #include <stdlib.h>
+#include <string.h>
+#include <android/log.h>
 
-// 全局状态指针
-static CompositorState* g_compositor_state = NULL;
+#define LOG_TAG "WindowManager"
+#define LOGI(...) __android_log_print(ANDROID_LOG_INFO, LOG_TAG, __VA_ARGS__)
+#define LOGE(...) __android_log_print(ANDROID_LOG_ERROR, LOG_TAG, __VA_ARGS__)
 
-// 安全内存分配函数
-static void* safe_malloc(size_t size) {
-    void* ptr = malloc(size);
-    if (!ptr) {
-        log_message(COMPOSITOR_LOG_ERROR, "Failed to allocate memory: %zu bytes", size);
+// 全局窗口管理器状态
+static struct window_manager g_wm = {0};
+
+// 内部函数声明
+static void window_remove_from_list(struct window* window);
+static void window_add_to_list(struct window* window);
+static void window_update_z_order(struct window* window);
+
+// 初始化窗口管理器
+int window_manager_init(int screen_width, int screen_height) {
+    if (g_wm.windows) {
+        LOGE("Window manager already initialized");
+        return -1;
     }
-    return ptr;
+    
+    memset(&g_wm, 0, sizeof(g_wm));
+    g_wm.screen_width = screen_width;
+    g_wm.screen_height = screen_height;
+    g_wm.next_window_id = 1;
+    
+    LOGI("Window manager initialized with screen size %dx%d", screen_width, screen_height);
+    return 0;
 }
 
-// 安全内存重分配函数
-static void* safe_realloc(void* ptr, size_t size) {
-    void* new_ptr = realloc(ptr, size);
-    if (!new_ptr && size > 0) {
-        log_message(COMPOSITOR_LOG_ERROR, "Failed to reallocate memory: %zu bytes", size);
+// 销毁窗口管理器
+void window_manager_destroy(void) {
+    // 销毁所有窗口
+    struct window* window = g_wm.windows;
+    while (window) {
+        struct window* next = window->next;
+        window_destroy(window);
+        window = next;
     }
-    return new_ptr;
+    
+    memset(&g_wm, 0, sizeof(g_wm));
+    LOGI("Window manager destroyed");
 }
 
-// 设置全局状态指针（由compositor.c调用）
-void compositor_window_set_state(CompositorState* state) {
-    g_compositor_state = state;
+// 创建窗口
+struct window* window_create(const struct window_attributes* attrs) {
+    if (!attrs) {
+        LOGE("Invalid attributes");
+        return NULL;
+    }
+    
+    struct window* window = (struct window*)calloc(1, sizeof(struct window));
+    if (!window) {
+        LOGE("Failed to allocate memory for window");
+        return NULL;
+    }
+    
+    // 设置窗口ID
+    window->id = g_wm.next_window_id++;
+    
+    // 复制属性
+    window->attrs = *attrs;
+    
+    // 设置默认值
+    if (window->attrs.min_width == 0) window->attrs.min_width = 100;
+    if (window->attrs.min_height == 0) window->attrs.min_height = 100;
+    if (window->attrs.max_width == 0) window->attrs.max_width = g_wm.screen_width;
+    if (window->attrs.max_height == 0) window->attrs.max_height = g_wm.screen_height;
+    
+    // 确保窗口大小在有效范围内
+    if (window->attrs.width < (int)window->attrs.min_width) 
+        window->attrs.width = window->attrs.min_width;
+    if (window->attrs.height < (int)window->attrs.min_height) 
+        window->attrs.height = window->attrs.min_height;
+    if (window->attrs.width > (int)window->attrs.max_width) 
+        window->attrs.width = window->attrs.max_width;
+    if (window->attrs.height > (int)window->attrs.max_height) 
+        window->attrs.height = window->attrs.max_height;
+    
+    // 确保窗口在屏幕内
+    if (window->attrs.x < 0) window->attrs.x = 0;
+    if (window->attrs.y < 0) window->attrs.y = 0;
+    if (window->attrs.x + window->attrs.width > g_wm.screen_width) 
+        window->attrs.x = g_wm.screen_width - window->attrs.width;
+    if (window->attrs.y + window->attrs.height > g_wm.screen_height) 
+        window->attrs.y = g_wm.screen_height - window->attrs.height;
+    
+    // 添加到窗口列表
+    window_add_to_list(window);
+    
+    // 设置Z轴顺序
+    window_update_z_order(window);
+    
+    LOGI("Created window %d at (%d,%d) size %dx%d", window->id, 
+         window->attrs.x, window->attrs.y, window->attrs.width, window->attrs.height);
+    
+    return window;
 }
 
-// 初始化窗口状态
-void window_state_init(WindowSavedState* state) {
-    if (!state) return;
-    memset(state, 0, sizeof(WindowSavedState));
-    state->state = WINDOW_STATE_NORMAL;
-    state->saved_opacity = WINDOW_DEFAULT_OPACITY;
+// 销毁窗口
+void window_destroy(struct window* window) {
+    if (!window) return;
+    
+    // 如果是焦点窗口，清除焦点
+    if (g_wm.focused_window == window) {
+        g_wm.focused_window = NULL;
+    }
+    
+    // 如果是顶层窗口，清除顶层窗口
+    if (g_wm.top_window == window) {
+        g_wm.top_window = NULL;
+    }
+    
+    // 从列表中移除
+    window_remove_from_list(window);
+    
+    LOGI("Destroyed window %d", window->id);
+    free(window);
 }
 
-// 保存窗口状态
-void window_save_state(WindowInfo* window, WindowSavedState* state) {
-    if (!window || !state) return;
+// 设置窗口属性
+int window_set_attributes(struct window* window, const struct window_attributes* attrs) {
+    if (!window || !attrs) {
+        LOGE("Invalid window or attributes");
+        return -1;
+    }
     
-    state->state = window->state;
-    state->saved_x = window->x;
-    state->saved_y = window->y;
-    state->saved_width = window->width;
-    state->saved_height = window->height;
-    state->is_fullscreen = (window->state == WINDOW_STATE_FULLSCREEN);
-    state->saved_opacity = window->opacity;
+    // 保存旧属性
+    struct window_attributes old_attrs = window->attrs;
+    
+    // 设置新属性
+    window->attrs = *attrs;
+    
+    // 确保窗口大小在有效范围内
+    if (window->attrs.width < (int)window->attrs.min_width) 
+        window->attrs.width = window->attrs.min_width;
+    if (window->attrs.height < (int)window->attrs.min_height) 
+        window->attrs.height = window->attrs.min_height;
+    if (window->attrs.width > (int)window->attrs.max_width) 
+        window->attrs.width = window->attrs.max_width;
+    if (window->attrs.height > (int)window->attrs.max_height) 
+        window->attrs.height = window->attrs.max_height;
+    
+    // 确保窗口在屏幕内
+    if (window->attrs.x < 0) window->attrs.x = 0;
+    if (window->attrs.y < 0) window->attrs.y = 0;
+    if (window->attrs.x + window->attrs.width > g_wm.screen_width) 
+        window->attrs.x = g_wm.screen_width - window->attrs.width;
+    if (window->attrs.y + window->attrs.height > g_wm.screen_height) 
+        window->attrs.y = g_wm.screen_height - window->attrs.height;
+    
+    // 如果位置或大小改变，更新窗口
+    if (old_attrs.x != window->attrs.x || old_attrs.y != window->attrs.y ||
+        old_attrs.width != window->attrs.width || old_attrs.height != window->attrs.height) {
+        // 这里可以添加更新窗口的代码
+    }
+    
+    return 0;
 }
 
-// 恢复窗口状态
-void window_restore_state(WindowInfo* window, WindowSavedState* state) {
-    if (!window || !state) return;
+// 获取窗口属性
+int window_get_attributes(struct window* window, struct window_attributes* attrs) {
+    if (!window || !attrs) {
+        LOGE("Invalid window or attributes");
+        return -1;
+    }
     
-    window->state = state->state;
-    window->x = state->saved_x;
-    window->y = state->saved_y;
-    window->width = state->saved_width;
-    window->height = state->saved_height;
-    window->opacity = state->saved_opacity;
+    *attrs = window->attrs;
+    return 0;
 }
 
-// 移动窗口到最前
-int compositor_activate_window(const char* window_title) {
-    if (!g_compositor_state || !window_title) {
-        log_message(COMPOSITOR_LOG_ERROR, "Invalid parameters for activate_window");
-        return COMPOSITOR_ERROR_INVALID_ARGS;
+// 设置窗口位置
+int window_set_position(struct window* window, int x, int y) {
+    if (!window) {
+        LOGE("Invalid window");
+        return -1;
     }
     
-    // 查找并激活Xwayland窗口
-    XwaylandWindowState* xwayland_state = &g_compositor_state->xwayland_state;
-    for (int i = 0; i < xwayland_state->window_count; i++) {
-        if (xwayland_state->windows[i]->title && strcmp(xwayland_state->windows[i]->title, window_title) == 0) {
-            xwayland_window_activate(xwayland_state->windows[i]);
-            return COMPOSITOR_OK;
-        }
-    }
+    // 确保窗口在屏幕内
+    if (x < 0) x = 0;
+    if (y < 0) y = 0;
+    if (x + window->attrs.width > g_wm.screen_width) 
+        x = g_wm.screen_width - window->attrs.width;
+    if (y + window->attrs.height > g_wm.screen_height) 
+        y = g_wm.screen_height - window->attrs.height;
     
-    // 查找并激活Wayland窗口
-    WaylandWindowState* wayland_state = &g_compositor_state->wayland_state;
-    for (int i = 0; i < wayland_state->window_count; i++) {
-        if (wayland_state->windows[i]->title && strcmp(wayland_state->windows[i]->title, window_title) == 0) {
-            wayland_window_activate(wayland_state->windows[i]);
-            return COMPOSITOR_OK;
-        }
-    }
+    window->attrs.x = x;
+    window->attrs.y = y;
     
-    return COMPOSITOR_ERROR_WINDOW_NOT_FOUND;
+    return 0;
 }
 
-// 关闭指定窗口
-int compositor_close_window(const char* window_title) {
-    if (!g_compositor_state || !window_title) {
-        log_message(COMPOSITOR_LOG_ERROR, "Invalid parameters for close_window");
-        return COMPOSITOR_ERROR_INVALID_ARGS;
+// 设置窗口大小
+int window_set_size(struct window* window, int width, int height) {
+    if (!window) {
+        LOGE("Invalid window");
+        return -1;
     }
     
-    // 查找并关闭Xwayland窗口
-    XwaylandWindowState* xwayland_state = &g_compositor_state->xwayland_state;
-    for (int i = 0; i < xwayland_state->window_count; i++) {
-        if (xwayland_state->windows[i]->title && strcmp(xwayland_state->windows[i]->title, window_title) == 0) {
-            xwayland_window_close(xwayland_state->windows[i]);
-            return COMPOSITOR_OK;
-        }
-    }
+    // 确保大小在有效范围内
+    if (width < (int)window->attrs.min_width) 
+        width = window->attrs.min_width;
+    if (height < (int)window->attrs.min_height) 
+        height = window->attrs.min_height;
+    if (width > (int)window->attrs.max_width) 
+        width = window->attrs.max_width;
+    if (height > (int)window->attrs.max_height) 
+        height = window->attrs.max_height;
     
-    // 查找并关闭Wayland窗口
-    WaylandWindowState* wayland_state = &g_compositor_state->wayland_state;
-    for (int i = 0; i < wayland_state->window_count; i++) {
-        if (wayland_state->windows[i]->title && strcmp(wayland_state->windows[i]->title, window_title) == 0) {
-            wayland_window_close(wayland_state->windows[i]);
-            return COMPOSITOR_OK;
-        }
-    }
+    window->attrs.width = width;
+    window->attrs.height = height;
     
-    return COMPOSITOR_ERROR_WINDOW_NOT_FOUND;
+    // 确保窗口在屏幕内
+    if (window->attrs.x + window->attrs.width > g_wm.screen_width) 
+        window->attrs.x = g_wm.screen_width - window->attrs.width;
+    if (window->attrs.y + window->attrs.height > g_wm.screen_height) 
+        window->attrs.y = g_wm.screen_height - window->attrs.height;
+    
+    return 0;
 }
 
-// 调整窗口大小
-int compositor_resize_window(const char* window_title, int width, int height) {
-    if (!g_compositor_state || !window_title) {
-        log_message(COMPOSITOR_LOG_ERROR, "Invalid parameters for resize_window");
-        return COMPOSITOR_ERROR_INVALID_ARGS;
+// 设置窗口状态
+int window_set_state(struct window* window, window_state_t state) {
+    if (!window) {
+        LOGE("Invalid window");
+        return -1;
     }
     
-    // 边界检查
-    if (width < WINDOW_MIN_WIDTH) width = WINDOW_MIN_WIDTH;
-    if (height < WINDOW_MIN_HEIGHT) height = WINDOW_MIN_HEIGHT;
-    if (width > g_compositor_state->width) width = g_compositor_state->width;
-    if (height > g_compositor_state->height) height = g_compositor_state->height;
+    window_state_t old_state = window->attrs.state;
+    window->attrs.state = state;
     
-    // 查找并调整Xwayland窗口大小
-    XwaylandWindowState* xwayland_state = &g_compositor_state->xwayland_state;
-    for (int i = 0; i < xwayland_state->window_count; i++) {
-        if (xwayland_state->windows[i]->title && strcmp(xwayland_state->windows[i]->title, window_title) == 0) {
-            // 保存旧区域用于脏标记
-            int old_x = xwayland_state->windows[i]->x;
-            int old_y = xwayland_state->windows[i]->y;
-            int old_width = xwayland_state->windows[i]->width;
-            int old_height = xwayland_state->windows[i]->height;
+    // 处理状态变化
+    switch (state) {
+        case WINDOW_STATE_FULLSCREEN:
+            // 保存旧位置和大小
+            // 设置全屏大小
+            window_set_size(window, g_wm.screen_width, g_wm.screen_height);
+            window_set_position(window, 0, 0);
+            break;
             
-            // 调整窗口大小
-            xwayland_state->windows[i]->width = width;
-            xwayland_state->windows[i]->height = height;
-            xwayland_state->windows[i]->is_dirty = true;
+        case WINDOW_STATE_MAXIMIZED:
+            // 设置最大化大小
+            window_set_size(window, g_wm.screen_width, g_wm.screen_height);
+            window_set_position(window, 0, 0);
+            break;
             
-            // 标记旧区域和新区域都需要重绘
-            mark_dirty_rect(g_compositor_state, old_x, old_y, old_width, old_height);
-            mark_dirty_rect(g_compositor_state, xwayland_state->windows[i]->x, 
-                           xwayland_state->windows[i]->y, width, height);
+        case WINDOW_STATE_MINIMIZED:
+            // 隐藏窗口
+            break;
             
-            return COMPOSITOR_OK;
-        }
+        case WINDOW_STATE_NORMAL:
+            // 恢复正常大小
+            break;
+            
+        case WINDOW_STATE_HIDDEN:
+            // 隐藏窗口
+            break;
     }
     
-    // 查找并调整Wayland窗口大小
-    WaylandWindowState* wayland_state = &g_compositor_state->wayland_state;
-    for (int i = 0; i < wayland_state->window_count; i++) {
-        if (wayland_state->windows[i]->title && strcmp(wayland_state->windows[i]->title, window_title) == 0) {
-            // 保存旧区域用于脏标记
-            int old_x = wayland_state->windows[i]->x;
-            int old_y = wayland_state->windows[i]->y;
-            int old_width = wayland_state->windows[i]->width;
-            int old_height = wayland_state->windows[i]->height;
-            
-            // 调整窗口大小
-            wayland_state->windows[i]->width = width;
-            wayland_state->windows[i]->height = height;
-            wayland_state->windows[i]->is_dirty = true;
-            
-            // 标记旧区域和新区域都需要重绘
-            mark_dirty_rect(g_compositor_state, old_x, old_y, old_width, old_height);
-            mark_dirty_rect(g_compositor_state, wayland_state->windows[i]->x, 
-                           wayland_state->windows[i]->y, width, height);
-            
-            return COMPOSITOR_OK;
-        }
-    }
-    
-    return COMPOSITOR_ERROR_WINDOW_NOT_FOUND;
+    return 0;
 }
 
-// 移动窗口位置
-int compositor_move_window(const char* window_title, int x, int y) {
-    if (!g_compositor_state || !window_title) {
-        log_message(COMPOSITOR_LOG_ERROR, "Invalid parameters for move_window");
-        return COMPOSITOR_ERROR_INVALID_ARGS;
+// 设置窗口焦点
+void window_set_focus(struct window* window) {
+    if (!window || !window->attrs.focusable) {
+        return;
     }
     
-    // 查找Xwayland窗口
-    XwaylandWindowState* xwayland_state = &g_compositor_state->xwayland_state;
-    for (int i = 0; i < xwayland_state->window_count; i++) {
-        if (xwayland_state->windows[i]->title && strcmp(xwayland_state->windows[i]->title, window_title) == 0) {
-            // 边界检查
-            int new_x = x;
-            int new_y = y;
-            if (new_x < 0) new_x = 0;
-            if (new_y < 0) new_y = 0;
-            if (new_x > g_compositor_state->width - xwayland_state->windows[i]->width - WINDOW_BORDER_WIDTH * 2) {
-                new_x = g_compositor_state->width - xwayland_state->windows[i]->width - WINDOW_BORDER_WIDTH * 2;
-            }
-            if (new_y > g_compositor_state->height - xwayland_state->windows[i]->height - WINDOW_BORDER_WIDTH * 2 - WINDOW_TITLEBAR_HEIGHT) {
-                new_y = g_compositor_state->height - xwayland_state->windows[i]->height - WINDOW_BORDER_WIDTH * 2 - WINDOW_TITLEBAR_HEIGHT;
-            }
-            
-            // 保存旧位置用于脏标记
-            int old_x = xwayland_state->windows[i]->x;
-            int old_y = xwayland_state->windows[i]->y;
-            int width = xwayland_state->windows[i]->width;
-            int height = xwayland_state->windows[i]->height;
-            
-            // 移动窗口
-            xwayland_state->windows[i]->x = new_x;
-            xwayland_state->windows[i]->y = new_y;
-            xwayland_state->windows[i]->is_dirty = true;
-            
-            // 标记旧位置和新位置都需要重绘
-            mark_dirty_rect(g_compositor_state, old_x, old_y, width, height);
-            mark_dirty_rect(g_compositor_state, new_x, new_y, width, height);
-            
-            return COMPOSITOR_OK;
-        }
+    // 清除之前焦点窗口的焦点
+    if (g_wm.focused_window) {
+        g_wm.focused_window->has_focus = false;
     }
     
-    // 查找Wayland窗口
-    WaylandWindowState* wayland_state = &g_compositor_state->wayland_state;
-    for (int i = 0; i < wayland_state->window_count; i++) {
-        if (wayland_state->windows[i]->title && strcmp(wayland_state->windows[i]->title, window_title) == 0) {
-            // 边界检查
-            int new_x = x;
-            int new_y = y;
-            if (new_x < 0) new_x = 0;
-            if (new_y < 0) new_y = 0;
-            if (new_x > g_compositor_state->width - wayland_state->windows[i]->width - WINDOW_BORDER_WIDTH * 2) {
-                new_x = g_compositor_state->width - wayland_state->windows[i]->width - WINDOW_BORDER_WIDTH * 2;
-            }
-            if (new_y > g_compositor_state->height - wayland_state->windows[i]->height - WINDOW_BORDER_WIDTH * 2 - WINDOW_TITLEBAR_HEIGHT) {
-                new_y = g_compositor_state->height - wayland_state->windows[i]->height - WINDOW_BORDER_WIDTH * 2 - WINDOW_TITLEBAR_HEIGHT;
-            }
-            
-            // 保存旧位置用于脏标记
-            int old_x = wayland_state->windows[i]->x;
-            int old_y = wayland_state->windows[i]->y;
-            int width = wayland_state->windows[i]->width;
-            int height = wayland_state->windows[i]->height;
-            
-            // 移动窗口
-            wayland_state->windows[i]->x = new_x;
-            wayland_state->windows[i]->y = new_y;
-            wayland_state->windows[i]->is_dirty = true;
-            
-            // 标记旧位置和新位置都需要重绘
-            mark_dirty_rect(g_compositor_state, old_x, old_y, width, height);
-            mark_dirty_rect(g_compositor_state, new_x, new_y, width, height);
-            
-            return COMPOSITOR_OK;
-        }
-    }
+    // 设置新焦点窗口
+    g_wm.focused_window = window;
+    window->has_focus = true;
     
-    return COMPOSITOR_ERROR_WINDOW_NOT_FOUND;
+    // 将焦点窗口移到顶层
+    window_raise_to_top(window);
 }
 
-// 最小化窗口
-int compositor_minimize_window(const char* window_title) {
-    if (!g_compositor_state || !window_title) {
-        log_message(COMPOSITOR_LOG_ERROR, "Invalid parameters for minimize_window");
-        return COMPOSITOR_ERROR_INVALID_ARGS;
-    }
-    
-    // 查找并最小化Xwayland窗口
-    XwaylandWindowState* xwayland_state = &g_compositor_state->xwayland_state;
-    for (int i = 0; i < xwayland_state->window_count; i++) {
-        if (xwayland_state->windows[i]->title && strcmp(xwayland_state->windows[i]->title, window_title) == 0) {
-            if (xwayland_state->windows[i]->state != WINDOW_STATE_MINIMIZED) {
-                // 准备临时WindowInfo用于保存状态
-                WindowInfo info = {
-                    .title = xwayland_state->windows[i]->title,
-                    .x = xwayland_state->windows[i]->x,
-                    .y = xwayland_state->windows[i]->y,
-                    .width = xwayland_state->windows[i]->width,
-                    .height = xwayland_state->windows[i]->height,
-                    .state = xwayland_state->windows[i]->state,
-                    .opacity = xwayland_state->windows[i]->opacity,
-                    .z_order = xwayland_state->windows[i]->z_order,
-                    .is_wayland = false
-                };
-                window_save_state(&info, &xwayland_state->windows[i]->saved_state);
-                xwayland_state->windows[i]->state = WINDOW_STATE_MINIMIZED;
-                xwayland_state->windows[i]->y = WINDOW_MINIMIZED_Y;
-                mark_dirty_rect(g_compositor_state, 0, 0, g_compositor_state->width, g_compositor_state->height);
-            }
-            return COMPOSITOR_OK;
-        }
-    }
-    
-    // 查找并最小化Wayland窗口
-    WaylandWindowState* wayland_state = &g_compositor_state->wayland_state;
-    for (int i = 0; i < wayland_state->window_count; i++) {
-        if (wayland_state->windows[i]->title && strcmp(wayland_state->windows[i]->title, window_title) == 0) {
-            if (wayland_state->windows[i]->state != WINDOW_STATE_MINIMIZED) {
-                // 准备临时WindowInfo用于保存状态
-                WindowInfo info = {
-                    .title = wayland_state->windows[i]->title,
-                    .x = wayland_state->windows[i]->x,
-                    .y = wayland_state->windows[i]->y,
-                    .width = wayland_state->windows[i]->width,
-                    .height = wayland_state->windows[i]->height,
-                    .state = wayland_state->windows[i]->state,
-                    .opacity = wayland_state->windows[i]->opacity,
-                    .z_order = wayland_state->windows[i]->z_order,
-                    .is_wayland = true
-                };
-                window_save_state(&info, &wayland_state->windows[i]->saved_state);
-                wayland_state->windows[i]->state = WINDOW_STATE_MINIMIZED;
-                wayland_state->windows[i]->y = WINDOW_MINIMIZED_Y;
-                mark_dirty_rect(g_compositor_state, 0, 0, g_compositor_state->width, g_compositor_state->height);
-            }
-            return COMPOSITOR_OK;
-        }
-    }
-    
-    return COMPOSITOR_ERROR_WINDOW_NOT_FOUND;
+// 获取当前焦点窗口
+struct window* window_get_focused(void) {
+    return g_wm.focused_window;
 }
 
-// 最大化窗口
-int compositor_maximize_window(const char* window_title) {
-    if (!g_compositor_state || !window_title) {
-        log_message(COMPOSITOR_LOG_ERROR, "Invalid parameters for maximize_window");
-        return COMPOSITOR_ERROR_INVALID_ARGS;
+// 将窗口移到顶层
+void window_raise_to_top(struct window* window) {
+    if (!window) return;
+    
+    // 从当前位置移除
+    window_remove_from_list(window);
+    
+    // 添加到列表开头
+    window->next = g_wm.windows;
+    window->prev = NULL;
+    
+    if (g_wm.windows) {
+        g_wm.windows->prev = window;
     }
     
-    // 查找并最大化Xwayland窗口
-    XwaylandWindowState* xwayland_state = &g_compositor_state->xwayland_state;
-    for (int i = 0; i < xwayland_state->window_count; i++) {
-        if (xwayland_state->windows[i]->title && strcmp(xwayland_state->windows[i]->title, window_title) == 0) {
-            if (xwayland_state->windows[i]->state != WINDOW_STATE_MAXIMIZED) {
-                // 准备临时WindowInfo用于保存状态
-                WindowInfo info = {
-                    .title = xwayland_state->windows[i]->title,
-                    .x = xwayland_state->windows[i]->x,
-                    .y = xwayland_state->windows[i]->y,
-                    .width = xwayland_state->windows[i]->width,
-                    .height = xwayland_state->windows[i]->height,
-                    .state = xwayland_state->windows[i]->state,
-                    .opacity = xwayland_state->windows[i]->opacity,
-                    .z_order = xwayland_state->windows[i]->z_order,
-                    .is_wayland = false
-                };
-                window_save_state(&info, &xwayland_state->windows[i]->saved_state);
-                xwayland_state->windows[i]->state = WINDOW_STATE_MAXIMIZED;
-                xwayland_state->windows[i]->x = WINDOW_MARGIN;
-                xwayland_state->windows[i]->y = WINDOW_MARGIN;
-                xwayland_state->windows[i]->width = g_compositor_state->width - 2 * WINDOW_MARGIN - 2 * WINDOW_BORDER_WIDTH;
-                xwayland_state->windows[i]->height = g_compositor_state->height - 2 * WINDOW_MARGIN - 2 * WINDOW_BORDER_WIDTH - WINDOW_TITLEBAR_HEIGHT;
-                mark_dirty_rect(g_compositor_state, 0, 0, g_compositor_state->width, g_compositor_state->height);
-            }
-            return COMPOSITOR_OK;
-        }
-    }
+    g_wm.windows = window;
     
-    // 查找并最大化Wayland窗口
-    WaylandWindowState* wayland_state = &g_compositor_state->wayland_state;
-    for (int i = 0; i < wayland_state->window_count; i++) {
-        if (wayland_state->windows[i]->title && strcmp(wayland_state->windows[i]->title, window_title) == 0) {
-            if (wayland_state->windows[i]->state != WINDOW_STATE_MAXIMIZED) {
-                // 准备临时WindowInfo用于保存状态
-                WindowInfo info = {
-                    .title = wayland_state->windows[i]->title,
-                    .x = wayland_state->windows[i]->x,
-                    .y = wayland_state->windows[i]->y,
-                    .width = wayland_state->windows[i]->width,
-                    .height = wayland_state->windows[i]->height,
-                    .state = wayland_state->windows[i]->state,
-                    .opacity = wayland_state->windows[i]->opacity,
-                    .z_order = wayland_state->windows[i]->z_order,
-                    .is_wayland = true
-                };
-                window_save_state(&info, &wayland_state->windows[i]->saved_state);
-                wayland_state->windows[i]->state = WINDOW_STATE_MAXIMIZED;
-                wayland_state->windows[i]->x = WINDOW_MARGIN;
-                wayland_state->windows[i]->y = WINDOW_MARGIN;
-                wayland_state->windows[i]->width = g_compositor_state->width - 2 * WINDOW_MARGIN - 2 * WINDOW_BORDER_WIDTH;
-                wayland_state->windows[i]->height = g_compositor_state->height - 2 * WINDOW_MARGIN - 2 * WINDOW_BORDER_WIDTH - WINDOW_TITLEBAR_HEIGHT;
-                mark_dirty_rect(g_compositor_state, 0, 0, g_compositor_state->width, g_compositor_state->height);
-            }
-            return COMPOSITOR_OK;
-        }
-    }
+    // 更新顶层窗口
+    g_wm.top_window = window;
     
-    return COMPOSITOR_ERROR_WINDOW_NOT_FOUND;
+    // 更新Z轴顺序
+    window_update_z_order(window);
 }
 
-// 还原窗口
-int compositor_restore_window(const char* window_title) {
-    if (!g_compositor_state || !window_title) {
-        log_message(COMPOSITOR_LOG_ERROR, "Invalid parameters for restore_window");
-        return COMPOSITOR_ERROR_INVALID_ARGS;
+// 将窗口移到底层
+void window_lower_to_bottom(struct window* window) {
+    if (!window) return;
+    
+    // 从当前位置移除
+    window_remove_from_list(window);
+    
+    // 找到最后一个窗口
+    struct window* last = g_wm.windows;
+    while (last && last->next) {
+        last = last->next;
     }
     
-    // 查找并还原Xwayland窗口
-    XwaylandWindowState* xwayland_state = &g_compositor_state->xwayland_state;
-    for (int i = 0; i < xwayland_state->window_count; i++) {
-        if (xwayland_state->windows[i]->title && strcmp(xwayland_state->windows[i]->title, window_title) == 0) {
-            // 准备临时WindowInfo用于恢复状态
-            WindowInfo info;
-            window_restore_state(&info, &xwayland_state->windows[i]->saved_state);
-            
-            // 应用恢复的状态到窗口
-            xwayland_state->windows[i]->x = info.x;
-            xwayland_state->windows[i]->y = info.y;
-            xwayland_state->windows[i]->width = info.width;
-            xwayland_state->windows[i]->height = info.height;
-            xwayland_state->windows[i]->state = info.state;
-            xwayland_state->windows[i]->opacity = info.opacity;
-            xwayland_state->windows[i]->z_order = info.z_order;
-            
-            mark_dirty_rect(g_compositor_state, 0, 0, g_compositor_state->width, g_compositor_state->height);
-            return COMPOSITOR_OK;
-        }
-    }
-    
-    // 查找并还原Wayland窗口
-    WaylandWindowState* wayland_state = &g_compositor_state->wayland_state;
-    for (int i = 0; i < wayland_state->window_count; i++) {
-        if (wayland_state->windows[i]->title && strcmp(wayland_state->windows[i]->title, window_title) == 0) {
-            // 准备临时WindowInfo用于恢复状态
-            WindowInfo info;
-            window_restore_state(&info, &wayland_state->windows[i]->saved_state);
-            
-            // 应用恢复的状态到窗口
-            wayland_state->windows[i]->x = info.x;
-            wayland_state->windows[i]->y = info.y;
-            wayland_state->windows[i]->width = info.width;
-            wayland_state->windows[i]->height = info.height;
-            wayland_state->windows[i]->state = info.state;
-            wayland_state->windows[i]->opacity = info.opacity;
-            wayland_state->windows[i]->z_order = info.z_order;
-            
-            mark_dirty_rect(g_compositor_state, 0, 0, g_compositor_state->width, g_compositor_state->height);
-            return COMPOSITOR_OK;
-        }
-    }
-    
-    return COMPOSITOR_ERROR_WINDOW_NOT_FOUND;
-}
-
-// 设置窗口透明度
-int compositor_set_window_opacity(const char* window_title, float opacity) {
-    if (!g_compositor_state || !window_title) {
-        log_message(COMPOSITOR_LOG_ERROR, "Invalid parameters for set_window_opacity");
-        return COMPOSITOR_ERROR_INVALID_ARGS;
-    }
-    
-    if (opacity < 0.0f || opacity > 1.0f) {
-        log_message(COMPOSITOR_LOG_WARN, "Opacity value out of range (0.0-1.0): %.2f", opacity);
-        opacity = clamp_float(opacity, 0.0f, 1.0f);
-    }
-    
-    // 查找Xwayland窗口
-    XwaylandWindowState* xwayland_state = &g_compositor_state->xwayland_state;
-    for (int i = 0; i < xwayland_state->window_count; i++) {
-        if (xwayland_state->windows[i]->title && strcmp(xwayland_state->windows[i]->title, window_title) == 0) {
-            // 安全设置透明度
-            XwaylandWindow* window = xwayland_state->windows[i];
-            window->opacity = opacity;
-            
-            // 标记需要重绘的区域
-            mark_dirty_rect(g_compositor_state, window->x, 
-                          window->y, 
-                          window->width, 
-                          window->height);
-            return COMPOSITOR_OK;
-        }
-    }
-    
-    // 查找Wayland窗口
-    WaylandWindowState* wayland_state = &g_compositor_state->wayland_state;
-    for (int i = 0; i < wayland_state->window_count; i++) {
-        if (wayland_state->windows[i]->title && strcmp(wayland_state->windows[i]->title, window_title) == 0) {
-            // 安全设置透明度
-            WaylandWindow* window = wayland_state->windows[i];
-            window->opacity = opacity;
-            
-            // 标记需要重绘的区域
-            mark_dirty_rect(g_compositor_state, window->x, 
-                          window->y, 
-                          window->width, 
-                          window->height);
-            return COMPOSITOR_OK;
-        }
-    }
-    
-    return COMPOSITOR_ERROR_WINDOW_NOT_FOUND;
-}
-
-// 获取窗口信息
-int compositor_get_window_info(const char* window_title, WindowInfo* info) {
-    if (!g_compositor_state || !window_title || !info) {
-        log_message(COMPOSITOR_LOG_ERROR, "Invalid parameters for get_window_info");
-        return COMPOSITOR_ERROR_INVALID_ARGS;
-    }
-    
-    // 查找Xwayland窗口
-    XwaylandWindowState* xwayland_state = &g_compositor_state->xwayland_state;
-    for (int i = 0; i < xwayland_state->window_count; i++) {
-        if (xwayland_state->windows[i]->title && strcmp(xwayland_state->windows[i]->title, window_title) == 0) {
-            // 填充窗口信息
-            info->title = xwayland_state->windows[i]->title;
-            info->x = xwayland_state->windows[i]->x;
-            info->y = xwayland_state->windows[i]->y;
-            info->width = xwayland_state->windows[i]->width;
-            info->height = xwayland_state->windows[i]->height;
-            info->state = xwayland_state->windows[i]->state;
-            info->opacity = xwayland_state->windows[i]->opacity;
-            info->z_order = xwayland_state->windows[i]->z_order;
-            info->is_wayland = false;
-            return COMPOSITOR_OK;
-        }
-    }
-    
-    // 查找Wayland窗口
-    WaylandWindowState* wayland_state = &g_compositor_state->wayland_state;
-    for (int i = 0; i < wayland_state->window_count; i++) {
-        if (wayland_state->windows[i]->title && strcmp(wayland_state->windows[i]->title, window_title) == 0) {
-            // 填充窗口信息
-            info->title = wayland_state->windows[i]->title;
-            info->x = wayland_state->windows[i]->x;
-            info->y = wayland_state->windows[i]->y;
-            info->width = wayland_state->windows[i]->width;
-            info->height = wayland_state->windows[i]->height;
-            info->state = wayland_state->windows[i]->state;
-            info->opacity = wayland_state->windows[i]->opacity;
-            info->z_order = wayland_state->windows[i]->z_order;
-            info->is_wayland = true;
-            return COMPOSITOR_OK;
-        }
-    }
-    
-    return COMPOSITOR_ERROR_WINDOW_NOT_FOUND;
-}
-
-// 获取所有窗口列表
-int compositor_get_all_windows(int* count, char*** titles) {
-    if (!g_compositor_state || !count || !titles) {
-        log_message(COMPOSITOR_LOG_ERROR, "Invalid parameters for get_all_windows");
-        return COMPOSITOR_ERROR_INVALID_ARGS;
-    }
-    
-    // 统计窗口总数
-    int total_count = 0;
-    XwaylandWindowState* xwayland_state = &g_compositor_state->xwayland_state;
-    WaylandWindowState* wayland_state = &g_compositor_state->wayland_state;
-    
-    for (int i = 0; i < xwayland_state->window_count; i++) {
-        if (xwayland_state->windows[i]->title) total_count++;
-    }
-    
-    for (int i = 0; i < wayland_state->window_count; i++) {
-        if (wayland_state->windows[i]->title) total_count++;
-    }
-    
-    // 分配内存
-    *titles = (char**)malloc(total_count * sizeof(char*));
-    if (!*titles) {
-        log_message(COMPOSITOR_LOG_ERROR, "Failed to allocate memory for window titles");
-        return COMPOSITOR_ERROR_MEMORY;
-    }
-    
-    // 填充窗口标题
-    int index = 0;
-    for (int i = 0; i < xwayland_state->window_count; i++) {
-        if (xwayland_state->windows[i]->title) {
-            (*titles)[index++] = strdup(xwayland_state->windows[i]->title);
-        }
-    }
-    
-    for (int i = 0; i < wayland_state->window_count; i++) {
-        if (wayland_state->windows[i]->title) {
-            (*titles)[index++] = strdup(wayland_state->windows[i]->title);
-        }
-    }
-    
-    *count = total_count;
-    return COMPOSITOR_OK;
-}
-
-// 获取窗口Z顺序
-int compositor_get_window_z_order(const char* window_title) {
-    if (!g_compositor_state || !window_title) {
-        log_message(COMPOSITOR_LOG_ERROR, "Invalid parameters for get_window_z_order");
-        return COMPOSITOR_ERROR_INVALID_ARGS;
-    }
-    
-    // 查找Xwayland窗口
-    XwaylandWindowState* xwayland_state = &g_compositor_state->xwayland_state;
-    for (int i = 0; i < xwayland_state->window_count; i++) {
-        if (xwayland_state->windows[i]->title && strcmp(xwayland_state->windows[i]->title, window_title) == 0) {
-            return xwayland_state->windows[i]->z_order;
-        }
-    }
-    
-    // 查找Wayland窗口
-    WaylandWindowState* wayland_state = &g_compositor_state->wayland_state;
-    for (int i = 0; i < wayland_state->window_count; i++) {
-        if (wayland_state->windows[i]->title && strcmp(wayland_state->windows[i]->title, window_title) == 0) {
-            return wayland_state->windows[i]->z_order;
-        }
-    }
-    
-    return COMPOSITOR_ERROR_WINDOW_NOT_FOUND;
-}
-
-// 设置窗口Z顺序
-int compositor_set_window_z_order(const char* window_title, int z_order) {
-    if (!g_compositor_state || !window_title) {
-        log_message(COMPOSITOR_LOG_ERROR, "Invalid parameters for set_window_z_order");
-        return COMPOSITOR_ERROR_INVALID_ARGS;
-    }
-    
-    // 查找Xwayland窗口
-    XwaylandWindowState* xwayland_state = &g_compositor_state->xwayland_state;
-    for (int i = 0; i < xwayland_state->window_count; i++) {
-        if (xwayland_state->windows[i]->title && strcmp(xwayland_state->windows[i]->title, window_title) == 0) {
-            xwayland_state->windows[i]->z_order = z_order;
-            xwayland_state->windows[i]->is_dirty = true;
-            
-            // 标记窗口区域需要重绘
-            mark_dirty_rect(g_compositor_state, xwayland_state->windows[i]->x, 
-                           xwayland_state->windows[i]->y, 
-                           xwayland_state->windows[i]->width, 
-                           xwayland_state->windows[i]->height);
-            
-            // 重新排序窗口
-            compositor_sort_windows_by_z_order(g_compositor_state);
-            
-            return COMPOSITOR_OK;
-        }
-    }
-    
-    // 查找Wayland窗口
-    WaylandWindowState* wayland_state = &g_compositor_state->wayland_state;
-    for (int i = 0; i < wayland_state->window_count; i++) {
-        if (wayland_state->windows[i]->title && strcmp(wayland_state->windows[i]->title, window_title) == 0) {
-            wayland_state->windows[i]->z_order = z_order;
-            wayland_state->windows[i]->is_dirty = true;
-            
-            // 标记窗口区域需要重绘
-            mark_dirty_rect(g_compositor_state, wayland_state->windows[i]->x, 
-                           wayland_state->windows[i]->y, 
-                           wayland_state->windows[i]->width, 
-                           wayland_state->windows[i]->height);
-            
-            // 重新排序窗口
-            compositor_sort_windows_by_z_order(g_compositor_state);
-            
-            return COMPOSITOR_OK;
-        }
-    }
-    
-    return COMPOSITOR_ERROR_WINDOW_NOT_FOUND;
-}
-
-// 获取所有窗口信息
-int compositor_get_all_windows_info(WindowInfo** windows, int* count) {
-    if (!g_compositor_state || !windows || !count) {
-        log_message(COMPOSITOR_LOG_ERROR, "Invalid parameters for get_all_windows_info");
-        return COMPOSITOR_ERROR_INVALID_ARGS;
-    }
-    
-    // 统计窗口总数
-    int total_count = 0;
-    XwaylandWindowState* xwayland_state = &g_compositor_state->xwayland_state;
-    WaylandWindowState* wayland_state = &g_compositor_state->wayland_state;
-    
-    total_count = xwayland_state->window_count + wayland_state->window_count;
-    
-    // 分配内存
-    *windows = (WindowInfo*)malloc(total_count * sizeof(WindowInfo));
-    if (!*windows) {
-        log_message(COMPOSITOR_LOG_ERROR, "Failed to allocate memory for window info");
-        return COMPOSITOR_ERROR_MEMORY;
-    }
-    
-    // 填充Xwayland窗口信息
-    int index = 0;
-    for (int i = 0; i < xwayland_state->window_count; i++) {
-        WindowInfo* info = &(*windows)[index++];
-        info->title = xwayland_state->windows[i]->title;
-        info->x = xwayland_state->windows[i]->x;
-        info->y = xwayland_state->windows[i]->y;
-        info->width = xwayland_state->windows[i]->width;
-        info->height = xwayland_state->windows[i]->height;
-        info->state = xwayland_state->windows[i]->state;
-        info->opacity = xwayland_state->windows[i]->opacity;
-        info->z_order = xwayland_state->windows[i]->z_order;
-        info->is_wayland = false;
-    }
-    
-    // 填充Wayland窗口信息
-    for (int i = 0; i < wayland_state->window_count; i++) {
-        WindowInfo* info = &(*windows)[index++];
-        info->title = wayland_state->windows[i]->title;
-        info->x = wayland_state->windows[i]->x;
-        info->y = wayland_state->windows[i]->y;
-        info->width = wayland_state->windows[i]->width;
-        info->height = wayland_state->windows[i]->height;
-        info->state = wayland_state->windows[i]->state;
-        info->opacity = wayland_state->windows[i]->opacity;
-        info->z_order = wayland_state->windows[i]->z_order;
-        info->is_wayland = true;
-    }
-    
-    *count = total_count;
-    return COMPOSITOR_OK;
-}
-
-// 窗口排序函数 - 根据Z顺序排序窗口
-void compositor_sort_windows_by_z_order(CompositorState* state) {
-    if (!state) return;
-    
-    // 排序Xwayland窗口
-    XwaylandWindowState* xwayland_state = &state->xwayland_state;
-    for (int i = 0; i < xwayland_state->window_count - 1; i++) {
-        for (int j = 0; j < xwayland_state->window_count - i - 1; j++) {
-            if (xwayland_state->windows[j]->z_order > xwayland_state->windows[j + 1]->z_order) {
-                // 交换窗口
-                XwaylandWindow* temp = xwayland_state->windows[j];
-                xwayland_state->windows[j] = xwayland_state->windows[j + 1];
-                xwayland_state->windows[j + 1] = temp;
-            }
-        }
-    }
-    
-    // 排序Wayland窗口
-    WaylandWindowState* wayland_state = &state->wayland_state;
-    for (int i = 0; i < wayland_state->window_count - 1; i++) {
-        for (int j = 0; j < wayland_state->window_count - i - 1; j++) {
-            if (wayland_state->windows[j]->z_order > wayland_state->windows[j + 1]->z_order) {
-                // 交换窗口
-                WaylandWindow* temp = wayland_state->windows[j];
-                wayland_state->windows[j] = wayland_state->windows[j + 1];
-                wayland_state->windows[j + 1] = temp;
-            }
-        }
-    }
-}
-
-// 根据窗口指针获取窗口信息
-int compositor_get_window_info_by_ptr(void* window_ptr, bool is_wayland_window, WindowInfo* info) {
-    if (!g_compositor_state || !window_ptr || !info) {
-        log_message(COMPOSITOR_LOG_ERROR, "Invalid parameters for get_window_info_by_ptr");
-        return COMPOSITOR_ERROR_INVALID_ARGS;
-    }
-    
-    if (is_wayland_window) {
-        WaylandWindow* window = (WaylandWindow*)window_ptr;
-        info->title = window->title;
-        info->x = window->x;
-        info->y = window->y;
-        info->width = window->width;
-        info->height = window->height;
-        info->state = window->state;
-        info->opacity = window->opacity;
-        info->z_order = window->z_order;
-        info->is_wayland = true;
+    // 添加到列表末尾
+    if (last) {
+        last->next = window;
+        window->prev = last;
+        window->next = NULL;
     } else {
-        XwaylandWindow* window = (XwaylandWindow*)window_ptr;
-        info->title = window->title;
-        info->x = window->x;
-        info->y = window->y;
-        info->width = window->width;
-        info->height = window->height;
-        info->state = window->state;
-        info->opacity = window->opacity;
-        info->z_order = window->z_order;
-        info->is_wayland = false;
+        // 列表为空
+        g_wm.windows = window;
+        window->prev = NULL;
+        window->next = NULL;
     }
     
-    return COMPOSITOR_OK;
+    // 更新Z轴顺序
+    window_update_z_order(window);
 }
 
-// 获取活动窗口信息
-int compositor_get_active_window_info(WindowInfo* info) {
-    if (!g_compositor_state || !info) {
-        log_message(COMPOSITOR_LOG_ERROR, "Invalid parameters for get_active_window_info");
-        return COMPOSITOR_ERROR_INVALID_ARGS;
-    }
+// 查找指定点下的窗口
+struct window* window_find_at_point(int x, int y) {
+    struct window* window = g_wm.windows;
     
-    // 查找最高Z顺序的窗口
-    int highest_z_order = -1;
-    void* active_window = NULL;
-    bool is_wayland = false;
-    
-    // 检查Xwayland窗口
-    XwaylandWindowState* xwayland_state = &g_compositor_state->xwayland_state;
-    for (int i = 0; i < xwayland_state->window_count; i++) {
-        if (xwayland_state->windows[i]->state != WINDOW_STATE_MINIMIZED && 
-            xwayland_state->windows[i]->z_order > highest_z_order) {
-            highest_z_order = xwayland_state->windows[i]->z_order;
-            active_window = xwayland_state->windows[i];
-            is_wayland = false;
-        }
-    }
-    
-    // 检查Wayland窗口
-    WaylandWindowState* wayland_state = &g_compositor_state->wayland_state;
-    for (int i = 0; i < wayland_state->window_count; i++) {
-        if (wayland_state->windows[i]->state != WINDOW_STATE_MINIMIZED && 
-            wayland_state->windows[i]->z_order > highest_z_order) {
-            highest_z_order = wayland_state->windows[i]->z_order;
-            active_window = wayland_state->windows[i];
-            is_wayland = true;
-        }
-    }
-    
-    if (!active_window) {
-        return COMPOSITOR_ERROR_NO_ACTIVE_WINDOW;
-    }
-    
-    return compositor_get_window_info_by_ptr(active_window, is_wayland, info);
-}
-
-// 获取窗口数量
-int compositor_get_window_count(bool include_wayland, bool include_xwayland) {
-    if (!g_compositor_state) {
-        log_message(COMPOSITOR_LOG_ERROR, "Compositor not initialized");
-        return COMPOSITOR_ERROR_NOT_INITIALIZED;
-    }
-    
-    int count = 0;
-    
-    if (include_xwayland) {
-        count += g_compositor_state->xwayland_state.window_count;
-    }
-    
-    if (include_wayland) {
-        count += g_compositor_state->wayland_state.window_count;
-    }
-    
-    return count;
-}
-
-// 标记窗口脏区域
-int compositor_mark_window_dirty_region(const char* window_title, int x, int y, int width, int height) {
-    if (!g_compositor_state || !window_title) {
-        log_message(COMPOSITOR_LOG_ERROR, "Invalid parameters for mark_window_dirty_region");
-        return COMPOSITOR_ERROR_INVALID_ARGS;
-    }
-    
-    // 查找Xwayland窗口
-    XwaylandWindowState* xwayland_state = &g_compositor_state->xwayland_state;
-    for (int i = 0; i < xwayland_state->window_count; i++) {
-        if (xwayland_state->windows[i]->title && strcmp(xwayland_state->windows[i]->title, window_title) == 0) {
-            xwayland_state->windows[i]->is_dirty = true;
-            
-            // 转换为全局坐标并标记脏区域
-            int global_x = xwayland_state->windows[i]->x + x;
-            int global_y = xwayland_state->windows[i]->y + y;
-            mark_dirty_rect(g_compositor_state, global_x, global_y, width, height);
-            
-            return COMPOSITOR_OK;
-        }
-    }
-    
-    // 查找Wayland窗口
-    WaylandWindowState* wayland_state = &g_compositor_state->wayland_state;
-    for (int i = 0; i < wayland_state->window_count; i++) {
-        if (wayland_state->windows[i]->title && strcmp(wayland_state->windows[i]->title, window_title) == 0) {
-            wayland_state->windows[i]->is_dirty = true;
-            
-            // 转换为全局坐标并标记脏区域
-            int global_x = wayland_state->windows[i]->x + x;
-            int global_y = wayland_state->windows[i]->y + y;
-            mark_dirty_rect(g_compositor_state, global_x, global_y, width, height);
-            
-            return COMPOSITOR_OK;
-        }
-    }
-    
-    return COMPOSITOR_ERROR_WINDOW_NOT_FOUND;
-}
-
-// 动态扩容窗口数组
-static int resize_window_array(void*** array, int32_t* capacity, int32_t new_capacity, size_t element_size) {
-    void** new_array = (void**)safe_realloc(*array, element_size * new_capacity);
-    if (!new_array) {
-        return COMPOSITOR_ERROR_MEMORY;
-    }
-    
-    *array = new_array;
-    *capacity = new_capacity;
-    return COMPOSITOR_OK;
-}
-
-// 添加Xwayland窗口（内部函数）
-int add_xwayland_window(XwaylandWindow* window) {
-    if (!g_compositor_state || !window) {
-        return COMPOSITOR_ERROR_INVALID_ARGS;
-    }
-    
-    XwaylandWindowState* state = &g_compositor_state->xwayland_state;
-    
-    // 检查是否需要扩容
-    if (state->window_count >= state->capacity) {
-        int new_capacity = state->capacity * 2;
-        if (new_capacity == 0) new_capacity = 8;
-        
-        // 检查是否超过最大窗口限制
-        if (new_capacity > state->max_windows) {
-            log_message(COMPOSITOR_LOG_ERROR, "Maximum window count reached");
-            return COMPOSITOR_ERROR_MAX_WINDOWS;
-        }
-        
-        if (resize_window_array((void***)&state->windows, &state->capacity, new_capacity, 
-                               sizeof(XwaylandWindow*)) != COMPOSITOR_OK) {
-            return COMPOSITOR_ERROR_MEMORY;
-        }
-    }
-    
-    // 设置Z轴顺序
-    window->z_order = g_compositor_state->next_z_order++;
-    window->is_dirty = true;
-    
-    // 初始化保存状态
-    window_save_state((WindowInfo*)window, &window->saved_state);
-    
-    // 添加窗口
-    state->windows[state->window_count++] = window;
-    
-    // 按Z轴顺序排序
-    compositor_sort_windows_by_z_order(g_compositor_state);
-    
-    // 标记需要重绘
-    compositor_schedule_redraw();
-    
-    log_message(COMPOSITOR_LOG_DEBUG, "Added Xwayland window: %s, Z-order: %d", 
-               window->title ? window->title : "(null)", window->z_order);
-    
-    return COMPOSITOR_OK;
-}
-
-// 添加Wayland窗口（内部函数）
-int add_wayland_window(WaylandWindow* window) {
-    if (!g_compositor_state || !window) {
-        return COMPOSITOR_ERROR_INVALID_ARGS;
-    }
-    
-    WaylandWindowState* state = &g_compositor_state->wayland_state;
-    
-    // 检查是否需要扩容
-    if (state->window_count >= state->capacity) {
-        int new_capacity = state->capacity * 2;
-        if (new_capacity == 0) new_capacity = 8;
-        
-        // 检查是否超过最大窗口限制
-        if (new_capacity > state->max_windows) {
-            log_message(COMPOSITOR_LOG_ERROR, "Maximum window count reached");
-            return COMPOSITOR_ERROR_MAX_WINDOWS;
-        }
-        
-        if (resize_window_array((void***)&state->windows, &state->capacity, new_capacity, 
-                               sizeof(WaylandWindow*)) != COMPOSITOR_OK) {
-            return COMPOSITOR_ERROR_MEMORY;
-        }
-    }
-    
-    // 设置Z轴顺序
-    window->z_order = g_compositor_state->next_z_order++;
-    window->is_dirty = true;
-    
-    // 初始化保存状态
-    window_save_state((WindowInfo*)window, &window->saved_state);
-    
-    // 添加窗口
-    state->windows[state->window_count++] = window;
-    
-    // 按Z轴顺序排序
-    compositor_sort_windows_by_z_order(g_compositor_state);
-    
-    // 标记需要重绘
-    compositor_schedule_redraw();
-    
-    log_message(COMPOSITOR_LOG_DEBUG, "Added Wayland window: %s, Z-order: %d", 
-               window->title ? window->title : "(null)", window->z_order);
-    
-    return COMPOSITOR_OK;
-}
-
-// 清理所有窗口
-void cleanup_windows(CompositorState* state) {
-    if (!state) return;
-    
-    // 清理Xwayland窗口
-    XwaylandWindowState* xwayland_state = &state->xwayland_state;
-    for (int i = 0; i < xwayland_state->window_count; i++) {
-        if (xwayland_state->windows[i]) {
-            if (xwayland_state->windows[i]->title) {
-                free((void*)xwayland_state->windows[i]->title);
+    // 从顶层窗口开始查找
+    while (window) {
+        if (window->attrs.state != WINDOW_STATE_HIDDEN && 
+            window->attrs.state != WINDOW_STATE_MINIMIZED) {
+            if (x >= window->attrs.x && x < window->attrs.x + window->attrs.width &&
+                y >= window->attrs.y && y < window->attrs.y + window->attrs.height) {
+                return window;
             }
-            free(xwayland_state->windows[i]);
         }
-    }
-    
-    if (xwayland_state->windows) {
-        free(xwayland_state->windows);
-        xwayland_state->windows = NULL;
-    }
-    xwayland_state->window_count = 0;
-    xwayland_state->capacity = 0;
-    
-    // 清理Wayland窗口
-    WaylandWindowState* wayland_state = &state->wayland_state;
-    for (int i = 0; i < wayland_state->window_count; i++) {
-        if (wayland_state->windows[i]) {
-            if (wayland_state->windows[i]->title) {
-                free((void*)wayland_state->windows[i]->title);
-            }
-            free(wayland_state->windows[i]);
-        }
-    }
-    
-    if (wayland_state->windows) {
-        free(wayland_state->windows);
-        wayland_state->windows = NULL;
-    }
-    wayland_state->window_count = 0;
-    wayland_state->capacity = 0;
-    
-    // 重置Z轴顺序
-    state->next_z_order = 0;
-}
-
-// 查找窗口函数（根据标题）
-static void* find_window_by_title(const char* title, bool* out_is_wayland) {
-    if (!g_compositor_state || !title) return NULL;
-    
-    // 查找Xwayland窗口
-    XwaylandWindowState* xwayland_state = &g_compositor_state->xwayland_state;
-    for (int i = 0; i < xwayland_state->window_count; i++) {
-        if (xwayland_state->windows[i]->title && 
-            strcmp(xwayland_state->windows[i]->title, title) == 0) {
-            if (out_is_wayland) *out_is_wayland = false;
-            return xwayland_state->windows[i];
-        }
-    }
-    
-    // 查找Wayland窗口
-    WaylandWindowState* wayland_state = &g_compositor_state->wayland_state;
-    for (int i = 0; i < wayland_state->window_count; i++) {
-        if (wayland_state->windows[i]->title && 
-            strcmp(wayland_state->windows[i]->title, title) == 0) {
-            if (out_is_wayland) *out_is_wayland = true;
-            return wayland_state->windows[i];
-        }
+        window = window->next;
     }
     
     return NULL;
 }
 
-// 清理窗口管理相关资源
-void compositor_window_cleanup(void) {
-    g_compositor_state = NULL;
+// 处理窗口移动
+int window_handle_move(struct window* window, int dx, int dy) {
+    if (!window || !window->attrs.movable) {
+        return -1;
+    }
+    
+    return window_set_position(window, window->attrs.x + dx, window->attrs.y + dy);
+}
+
+// 处理窗口大小调整
+int window_handle_resize(struct window* window, int width, int height) {
+    if (!window || !window->attrs.resizable) {
+        return -1;
+    }
+    
+    return window_set_size(window, width, height);
+}
+
+// 更新窗口管理器（每帧调用）
+void window_manager_update(void) {
+    // 这里可以添加窗口管理器的更新逻辑
+    // 例如动画、状态更新等
+}
+
+// 内部函数：从列表中移除窗口
+static void window_remove_from_list(struct window* window) {
+    if (!window) return;
+    
+    if (window->prev) {
+        window->prev->next = window->next;
+    } else {
+        // 是第一个窗口
+        g_wm.windows = window->next;
+    }
+    
+    if (window->next) {
+        window->next->prev = window->prev;
+    }
+    
+    window->prev = NULL;
+    window->next = NULL;
+}
+
+// 内部函数：添加窗口到列表
+static void window_add_to_list(struct window* window) {
+    if (!window) return;
+    
+    // 添加到列表开头
+    window->next = g_wm.windows;
+    window->prev = NULL;
+    
+    if (g_wm.windows) {
+        g_wm.windows->prev = window;
+    }
+    
+    g_wm.windows = window;
+    
+    // 更新顶层窗口
+    g_wm.top_window = window;
+}
+
+// 内部函数：更新窗口Z轴顺序
+static void window_update_z_order(struct window* window) {
+    if (!window) return;
+    
+    // 计算Z轴顺序
+    uint32_t z_order = 0;
+    struct window* w = g_wm.windows;
+    while (w) {
+        if (w == window) {
+            window->z_order = z_order;
+            break;
+        }
+        z_order++;
+        w = w->next;
+    }
 }
