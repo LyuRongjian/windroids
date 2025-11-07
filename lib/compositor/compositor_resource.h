@@ -44,6 +44,9 @@ struct resource {
     void* data;              // 资源数据
     struct resource_usage usage; // 使用统计
     struct resource* next;   // 下一个资源（链表）
+    bool async_loading;      // 是否异步加载
+    bool high_priority;       // 是否高优先级
+    uint32_t load_progress;  // 加载进度 (0-100)
 };
 
 // 内存池
@@ -97,8 +100,20 @@ struct resource* resource_find_by_name(const char* name);
 // 加载资源
 int resource_load(struct resource* resource);
 
+// 异步加载资源
+int resource_load_async(struct resource* resource, bool high_priority);
+
 // 卸载资源
 void resource_unload(struct resource* resource);
+
+// 获取资源加载进度
+uint32_t resource_get_load_progress(struct resource* resource);
+
+// 取消异步加载
+void resource_cancel_async_load(struct resource* resource);
+
+// 处理异步加载队列
+void resource_process_async_loads(void);
 
 // 增加资源引用
 void resource_add_ref(struct resource* resource);

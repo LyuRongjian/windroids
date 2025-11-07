@@ -16,6 +16,14 @@
 #define MAX_TOUCH_POINTS 10
 #define GAMEPAD_AXIS_THRESHOLD 0.1f
 #define GAMEPAD_DEADZONE 0.2f
+#define MAX_BATCHED_EVENTS 32
+#define EVENT_BATCH_TIMEOUT_US 1000  // 1ms
+
+// 事件批处理项
+struct input_event_batch_item {
+    struct input_event event;
+    uint64_t timestamp;
+};
 
 // 输入系统状态
 struct input_system {
@@ -68,6 +76,11 @@ struct input_system {
     
     // 线程安全
     pthread_mutex_t mutex;
+    
+    // 事件批处理
+    struct input_event_batch_item event_batch[MAX_BATCHED_EVENTS];
+    int batch_count;
+    uint64_t last_batch_time;
 };
 
 static struct input_system g_input = {0};
@@ -86,6 +99,9 @@ static void handle_touch_event(const input_event_t* event);
 static void handle_mouse_event(const input_event_t* event);
 static void handle_keyboard_event(const input_event_t* event);
 static void handle_gamepad_event(const input_event_t* event);
+static void input_flush_event_batch(void);
+static void input_add_event_to_batch(struct input_event* event);
+static uint64_t input_get_time(void);
 
 // 初始化输入系统
 int compositor_input_init(void) {
@@ -101,6 +117,10 @@ int compositor_input_init(void) {
         LOGE("Failed to initialize mutex");
         return -1;
     }
+    
+    // 初始化事件批处理
+    g_input.batch_count = 0;
+    g_input.last_batch_time = input_get_time();
     
     // 默认启用冲突解决
     g_input.conflict_resolution_enabled = true;
@@ -129,6 +149,13 @@ void compositor_input_step(void) {
     }
     
     pthread_mutex_lock(&g_input.mutex);
+    
+    // 检查是否需要刷新事件批处理队列
+    uint64_t current_time = input_get_time();
+    if (g_input.batch_count > 0 && 
+        (current_time - g_input.last_batch_time) >= EVENT_BATCH_TIMEOUT_US) {
+        input_flush_event_batch();
+    }
     
     // 这里可以添加定期检查设备连接状态的逻辑
     // 例如，轮询游戏手柄连接状态
@@ -673,10 +700,14 @@ static int find_free_touch_slot(void) {
 
 // 分发事件
 static void dispatch_event(const input_event_t* event) {
-    for (int i = 0; i < g_input.event_handler_count; i++) {
-        if (g_input.event_handlers[i]) {
-            g_input.event_handlers[i](event, g_input.event_handler_user_data[i]);
-        }
+    // 添加事件到批处理队列
+    input_add_event_to_batch((struct input_event*)event);
+    
+    // 检查是否需要立即刷新批处理
+    uint64_t current_time = input_get_time();
+    if (g_input.batch_count >= MAX_BATCHED_EVENTS || 
+        (current_time - g_input.last_batch_time) >= EVENT_BATCH_TIMEOUT_US) {
+        input_flush_event_batch();
     }
 }
 
@@ -763,4 +794,44 @@ static bool resolve_input_conflicts(const input_event_t* event) {
     }
     
     return true;  // 允许事件通过
+}
+
+// 添加事件到批处理队列
+static void input_add_event_to_batch(struct input_event* event) {
+    if (g_input.batch_count >= MAX_BATCHED_EVENTS) {
+        // 批处理队列已满，先刷新
+        input_flush_event_batch();
+    }
+    
+    // 添加事件到批处理队列
+    g_input.event_batch[g_input.batch_count].event = *event;
+    g_input.event_batch[g_input.batch_count].timestamp = input_get_time();
+    g_input.batch_count++;
+}
+
+// 刷新事件批处理队列
+static void input_flush_event_batch(void) {
+    if (g_input.batch_count == 0) {
+        return;
+    }
+    
+    // 分发所有批处理的事件
+    for (int i = 0; i < g_input.batch_count; i++) {
+        for (int j = 0; j < g_input.event_handler_count; j++) {
+            if (g_input.event_handlers[j]) {
+                g_input.event_handlers[j](&g_input.event_batch[i].event, g_input.event_handler_user_data[j]);
+            }
+        }
+    }
+    
+    // 重置批处理队列
+    g_input.batch_count = 0;
+    g_input.last_batch_time = input_get_time();
+}
+
+// 获取当前时间戳（微秒）
+static uint64_t input_get_time(void) {
+    struct timespec ts;
+    clock_gettime(CLOCK_MONOTONIC, &ts);
+    return (uint64_t)ts.tv_sec * 1000000 + (uint64_t)ts.tv_nsec / 1000;
 }

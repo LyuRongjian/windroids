@@ -13,10 +13,24 @@ static struct renderer g_renderer = {0};
 static int g_screen_width = 0;
 static int g_screen_height = 0;
 
+// 渲染状态缓存
+static struct {
+    uint32_t current_texture;
+    float current_opacity;
+    bool current_blend_enabled;
+    uint32_t current_shader;
+    bool dirty;
+} g_render_state_cache = {0};
+
 // 内部函数声明
 static void renderer_update_stats(void);
 static uint64_t renderer_get_time(void);
 static void renderer_merge_dirty_regions(void);
+static void renderer_apply_state_cache(void);
+static void renderer_set_texture(uint32_t texture);
+static void renderer_set_opacity(float opacity);
+static void renderer_set_blend_enabled(bool enabled);
+static void renderer_set_shader(uint32_t shader);
 
 // 初始化渲染器
 int renderer_init(int screen_width, int screen_height) {
@@ -373,11 +387,22 @@ int renderer_render_target(struct render_target* target) {
         return -1;
     }
     
-    // 绑定纹理
-    if (target->texture) {
-        // 实际实现中应绑定纹理
-        g_renderer.stats.texture_switches++;
+    // 使用状态缓存设置纹理
+    renderer_set_texture(target->texture);
+    
+    // 设置层的不透明度
+    for (int i = 0; i < RENDER_LAYER_COUNT; i++) {
+        for (uint32_t j = 0; j < g_renderer.layers[i].target_count; j++) {
+            if (g_renderer.layers[i].targets[j].id == target->id) {
+                renderer_set_opacity(g_renderer.layers[i].opacity);
+                renderer_set_blend_enabled(g_renderer.layers[i].opacity < 1.0f);
+                break;
+            }
+        }
     }
+    
+    // 应用状态缓存
+    renderer_apply_state_cache();
     
     // 渲染目标
     // 实际实现中应执行绘制调用
@@ -397,6 +422,51 @@ void renderer_get_stats(struct render_stats* stats) {
 // 重置渲染统计
 void renderer_reset_stats(void) {
     memset(&g_renderer.stats, 0, sizeof(g_renderer.stats));
+}
+
+// 应用状态缓存
+static void renderer_apply_state_cache(void) {
+    if (!g_render_state_cache.dirty) {
+        return;
+    }
+    
+    // 实际实现中应应用OpenGL/Vulkan状态
+    // 这里只是模拟状态应用
+    
+    g_render_state_cache.dirty = false;
+}
+
+// 设置纹理
+static void renderer_set_texture(uint32_t texture) {
+    if (g_render_state_cache.current_texture != texture) {
+        g_render_state_cache.current_texture = texture;
+        g_render_state_cache.dirty = true;
+        g_renderer.stats.texture_switches++;
+    }
+}
+
+// 设置不透明度
+static void renderer_set_opacity(float opacity) {
+    if (g_render_state_cache.current_opacity != opacity) {
+        g_render_state_cache.current_opacity = opacity;
+        g_render_state_cache.dirty = true;
+    }
+}
+
+// 设置混合模式
+static void renderer_set_blend_enabled(bool enabled) {
+    if (g_render_state_cache.current_blend_enabled != enabled) {
+        g_render_state_cache.current_blend_enabled = enabled;
+        g_render_state_cache.dirty = true;
+    }
+}
+
+// 设置着色器
+static void renderer_set_shader(uint32_t shader) {
+    if (g_render_state_cache.current_shader != shader) {
+        g_render_state_cache.current_shader = shader;
+        g_render_state_cache.dirty = true;
+    }
 }
 
 // 更新渲染器（每帧调用）
