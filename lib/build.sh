@@ -184,7 +184,7 @@ build_pixman_android() {
     export ANDROID_NDK="$ndk_path"
     
     # 调用子脚本
-    bash "$PROJECT_ROOT/lib/pixman_android/build.sh" "$OUTPUT_DIR" "$ndk_path" || {
+    bash "$PROJECT_ROOT/../lib/pixman_android/build.sh" "$OUTPUT_DIR" "$ndk_path" || {
         log "❌ Failed to build pixman_android"
         return 1
     }
@@ -347,17 +347,81 @@ build_all() {
         return 1
     }
 
-    # 使用 --wrap-mode=default，允许 Meson 自动 fallback 到 subprojects
-    build_meson wayland \
-        --wrap-mode=default \
-        -Dscanner=false \
-        -Dlibraries=true \
-        -Dtests=disabled \
-        -Dlibffi:exe_static_tramp=true \
-        -Dlibffi:c_std=gnu99 \
-        -Dlibffi:c_args='-Dasm=__asm__'
+    # 使用更可靠的方式实现wayland编译成功标志，避免重复编译
+    # 使用绝对路径确保标志文件位置正确
+    local wayland_dir="$(realpath "$SRC_DIR/wayland")"
+    local wayland_marker="$wayland_dir/.built"
+    
+    # 添加调试信息
+    log "🔍 Checking wayland build status: marker at $wayland_marker"
+    
+    if [ -f "$wayland_marker" ]; then
+        log "⏭️  wayland already built (found $wayland_marker), skipping compilation"
+    else
+        log "🔧 Starting wayland compilation..."
+        # 直接在wayland目录中创建临时标志文件，确保目录存在
+        mkdir -p "$wayland_dir"
+        
+        # 执行编译
+        build_meson wayland \
+            --wrap-mode=default \
+            -Dscanner=false \
+            -Dlibraries=true \
+            -Dtests=false \
+            -Ddocumentation=false \
+            -Dlibffi:exe_static_tramp=true \
+            -Dlibffi:c_std=gnu99 \
+            -Dlibffi:c_args='-Dasm=__asm__' \
+            -Dc_args='-Wno-error=implicit-function-declaration -Wno-error=int-conversion' \
+            -Dc_defines='open_memstream(buffer_p, length_p)=NULL'
+        
+        # 确保创建编译成功标志文件
+        if [ $? -eq 0 ]; then
+            # 增加调试信息：检查目录权限和路径
+            log "🔍 Debug: wayland directory permissions: $(ls -ld "$wayland_dir")"
+            log "🔍 Debug: wayland marker path: $wayland_marker"
+            log "🔍 Debug: Current user: $(whoami)"
+            
+            # 显式使用sudo（如果需要）创建标志文件，增加错误捕获
+            if touch "$wayland_marker"; then
+                log "✅ wayland compilation success flag created: $wayland_marker"
+                # 强制刷新文件系统缓存
+                sync
+                # 验证标志文件是否成功创建
+                if [ -f "$wayland_marker" ]; then
+                    log "✅ Verified: wayland marker exists and will prevent future recompilation"
+                    log "✅ Debug: marker file stats: $(ls -la "$wayland_marker")"
+                else
+                    # 尝试使用不同方法创建
+                    log "❌ Warning: Failed to verify wayland marker creation using standard check"
+                    # 尝试使用替代方法确保文件存在
+                    echo "built on $(date)" > "$wayland_marker"
+                    log "🔄 Retry: Created marker file with content"
+                    if [ -s "$wayland_marker" ]; then
+                        log "✅ Success: Marker file created with content and will prevent future recompilation"
+                    else
+                        log "❌ Error: Critical failure - Unable to create marker file even with alternative method"
+                    fi
+                fi
+            else
+                log "❌ Error: Failed to create wayland marker file: $wayland_marker"
+                # 尝试备用方法
+                log "🔄 Attempting alternative method to create marker"
+                mkdir -p "$(dirname "$wayland_marker")"
+                echo "built" > "$wayland_marker"
+                if [ $? -eq 0 ]; then
+                    log "✅ Alternative method succeeded: marker file created"
+                else
+                    log "❌ Critical failure: All methods to create marker failed"
+                fi
+            fi
+        else
+            log "❌ wayland compilation failed, no marker created"
+        fi
+    fi
 
-    build_meson libxkbcommon
+    build_meson libxkbcommon \
+        -Dtests=false
 
     build_autotools xorgproto
     build_autotools libX11

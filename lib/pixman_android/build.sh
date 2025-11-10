@@ -47,7 +47,7 @@ build_pixman_android() {
     
     # 设置工具链
     local ndk_toolchain="$ANDROID_NDK/toolchains/llvm/prebuilt/linux-x86_64"
-    local cc="$ndk_toolchain/bin/aarch64-linux-android28-clang"
+    local cc="$ndk_toolchain/bin/aarch64-linux-android21-clang"
     local ar="$ndk_toolchain/bin/llvm-ar"
     
     if [ ! -f "$cc" ]; then
@@ -63,35 +63,40 @@ build_pixman_android() {
     mkdir -p "$SCRIPT_DIR/build"
     cd "$SCRIPT_DIR/build" || return 1
 
-    log "🔧 Compiling pixman_android.c (Polyhedral + PGO + LTO)"
+    log "🔧 Compiling pixman_android.c (Optimized + LTO)"
     "$cc" -c ../pixman_android.c \
         -o pixman_android.o \
         -I.. \
-        -I"$ANDROID_NDK/sources/android/cpufeatures" \
         -D__ANDROID__ -DANDROID \
         -fPIC -march=armv8-a+simd+crc+crypto -mtune=cortex-a76 -O3 \
-        -mllvm -polly \
-        -mllvm -polly-vectorizer=stripmine \
-        -mllvm -polly-parallel \
-        -mllvm -polly-opt-fusion=max \
         -fvectorize \
         -fslp-vectorize \
-        -fforce-emit-vtables=0 \
         -fmerge-all-constants \
         -funroll-loops \
         -finline-functions \
         -ffast-math \
         -fno-math-errno \
         -ffp-contract=fast \
-        -fprofile-generate=/data/local/tmp/pgo \
         -flto=thin || {
         log "❌ Failed to compile pixman_android.c"
         return 1
     }
     
-    log "🔧 Compiling cpu-features.c"
-    "$cc" -c "$ANDROID_NDK/sources/android/cpufeatures/cpu-features.c" \
+    # 检查cpufeatures路径
+    local cpu_features_path="$ANDROID_NDK/sources/android/cpufeatures"
+    if [ ! -f "$cpu_features_path/cpu-features.c" ]; then
+        # 尝试新路径
+        cpu_features_path="$ANDROID_NDK/sources/cpufeatures"
+        if [ ! -f "$cpu_features_path/cpu-features.c" ]; then
+            log "❌ Cannot find cpu-features.c in NDK"
+            return 1
+        fi
+    fi
+    
+    log "🔧 Compiling cpu-features.c from $cpu_features_path"
+    "$cc" -c "$cpu_features_path/cpu-features.c" \
         -o cpu-features.o \
+        -I"$cpu_features_path" \
         -fPIC -O3 || {
         log "❌ Failed to compile cpu-features.c"
         return 1

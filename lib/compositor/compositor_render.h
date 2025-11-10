@@ -5,6 +5,10 @@
 #include <stdint.h>
 #include <stddef.h>
 
+// 前向声明，避免循环依赖
+struct draw_call;
+struct render_opt_stats;
+
 #ifdef __cplusplus
 extern "C" {
 #endif
@@ -52,6 +56,26 @@ struct render_stats {
     uint32_t texture_switches; // 纹理切换次数
     float cpu_time;           // CPU时间
     float gpu_time;           // GPU时间
+};
+
+// 绘制调用结构
+struct draw_call {
+    void* texture;      // 纹理指针
+    void* shader;       // 着色器指针
+    uint32_t vertex_count;  // 顶点数量
+    uint32_t index_count;   // 索引数量
+    int blend_mode;     // 混合模式
+    float transform[16]; // 变换矩阵
+};
+
+// 渲染优化统计
+struct render_opt_stats {
+    uint32_t dirty_region_count;
+    uint32_t total_dirty_area;
+    uint32_t draw_call_count;
+    bool batching_enabled;
+    bool state_sorting_enabled;
+    bool culling_enabled;
 };
 
 // 渲染器状态
@@ -135,6 +159,20 @@ void renderer_reset_stats(void);
 
 // 更新渲染器（每帧调用）
 void renderer_update(void);
+
+// 游戏模式相关函数
+void renderer_set_frame_pacing_enabled(bool enabled);
+void renderer_set_latency_optimization_enabled(bool enabled);
+void renderer_set_max_latency(uint32_t latency_ms);
+void renderer_set_triple_buffering_enabled(bool enabled);
+
+// 渲染优化相关函数
+void renderer_set_batching_enabled(render_layer_type_t layer, bool enabled);
+void renderer_set_state_sorting_enabled(render_layer_type_t layer, bool enabled);
+void renderer_set_culling_enabled(render_layer_type_t layer, bool enabled);
+void renderer_set_merge_threshold(render_layer_type_t layer, float threshold);
+void renderer_add_draw_call(render_layer_type_t layer, const struct draw_call* draw_call);
+void renderer_get_opt_stats(render_layer_type_t layer, struct render_opt_stats* stats);
 
 #ifdef __cplusplus
 }

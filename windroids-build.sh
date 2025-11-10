@@ -5,10 +5,13 @@
 set -e
 
 # 项目根目录
-PROJECT_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+PROJECT_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/windroids"
 
 # 确保LIBDIR变量存在
-LIBDIR="$PROJECT_ROOT/lib"
+LIBDIR="${LIBDIR:-$(dirname "$PROJECT_ROOT")/lib}"
+
+# 导出PROJECT_ROOT，以便env.sh不会覆盖它
+export PROJECT_ROOT
 
 # 加载环境变量和工具函数
 source "$LIBDIR/env.sh"

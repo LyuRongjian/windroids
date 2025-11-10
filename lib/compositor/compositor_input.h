@@ -191,6 +191,17 @@ int compositor_input_set_mapping_config(const char* config_path);
 // 启用/禁用输入冲突解决
 void compositor_input_set_conflict_resolution(bool enabled);
 
+// 游戏模式相关函数
+void input_set_touch_sensitivity(float sensitivity);
+void input_set_prediction_enabled(bool enabled);
+void input_set_prediction_time(float time_ms);
+float input_get_average_latency(void);
+uint32_t input_get_touch_event_count(void);
+uint32_t input_get_drag_event_count(void);
+uint32_t input_get_tap_event_count(void);
+uint32_t input_get_predicted_input_count(void);
+uint32_t input_get_accurate_prediction_count(void);
+
 #ifdef __cplusplus
 }
 #endif

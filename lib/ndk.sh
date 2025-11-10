@@ -45,7 +45,7 @@ download_ndk() {
 
 create_cross_and_native() {
     TARGET=aarch64-linux-android
-    API=29
+    API=21
     TOOLCHAIN="$NDK_DIR/toolchains/llvm/prebuilt/linux-x86_64"
     CROSS_FILE="$PROJECT_ROOT/android-cross.txt"
     NATIVE_FILE="$PROJECT_ROOT/native.ini"

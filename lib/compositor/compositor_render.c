@@ -1,4 +1,5 @@
 #include "compositor_render.h"
+#include "compositor_render_opt.h"
 #include <stdlib.h>
 #include <string.h>
 #include <time.h>
@@ -57,6 +58,12 @@ int renderer_init(int screen_width, int screen_height) {
         g_renderer.layers[i].opacity = 1.0f;
     }
     
+    // 初始化渲染优化模块
+    if (render_opt_init(screen_width, screen_height) != 0) {
+        LOGE("Failed to initialize render optimization module");
+        return -1;
+    }
+    
     LOGI("Renderer initialized with screen size %dx%d", screen_width, screen_height);
     return 0;
 }
@@ -73,6 +80,9 @@ void renderer_destroy(void) {
         layer->targets = NULL;
         layer->target_count = 0;
     }
+    
+    // 销毁渲染优化模块
+    render_opt_destroy();
     
     memset(&g_renderer, 0, sizeof(g_renderer));
     LOGI("Renderer destroyed");
@@ -190,6 +200,14 @@ void renderer_mark_dirty(int x, int y, int width, int height) {
         return;
     }
     
+    // 使用优化的脏区域管理器
+    for (int i = 0; i < RENDER_LAYER_COUNT; i++) {
+        if (g_renderer.layers[i].visible) {
+            render_opt_mark_dirty((render_layer_type_t)i, x, y, width, height);
+        }
+    }
+    
+    // 保留原有的脏区域列表实现作为备用
     // 裁剪到屏幕范围
     if (x < 0) {
         width += x;
@@ -253,6 +271,12 @@ void renderer_mark_target_dirty(struct render_target* target) {
 
 // 清除脏区域
 void renderer_clear_dirty_regions(void) {
+    // 使用优化的脏区域管理器
+    for (int i = 0; i < RENDER_LAYER_COUNT; i++) {
+        render_opt_clear_dirty_regions((render_layer_type_t)i);
+    }
+    
+    // 保留原有的脏区域列表实现作为备用
     for (int i = 0; i < RENDER_LAYER_COUNT; i++) {
         struct dirty_region* region = g_renderer.layers[i].dirty_regions;
         while (region) {
@@ -368,6 +392,22 @@ int renderer_render_layer(render_layer_type_t layer) {
     // 设置层状态
     // 实际实现中应设置OpenGL/Vulkan状态
     
+    // 获取优化的脏区域
+    struct dirty_region dirty_regions[16];
+    uint32_t dirty_count = render_opt_get_dirty_regions(layer, dirty_regions, 16);
+    
+    // 如果没有脏区域且启用了脏区域优化，则跳过渲染
+    if (g_renderer.dirty_regions_enabled && dirty_count == 0) {
+        return 0;
+    }
+    
+    // 优化渲染管道
+    render_opt_optimize_pipeline(layer);
+    
+    // 获取优化的绘制调用
+    struct draw_call draw_calls[256];
+    uint32_t draw_call_count = render_opt_get_draw_calls(layer, draw_calls, 256);
+    
     // 渲染所有目标
     for (uint32_t i = 0; i < l->target_count; i++) {
         struct render_target* target = &l->targets[i];
@@ -377,6 +417,9 @@ int renderer_render_layer(render_layer_type_t layer) {
             target->dirty = false;
         }
     }
+    
+    // 清除绘制调用
+    render_opt_clear_draw_calls(layer);
     
     return 0;
 }
@@ -540,4 +583,58 @@ static void renderer_merge_dirty_regions(void) {
             layer->dirty_regions = merged;
         }
     }
+}
+
+// 新增API：设置批处理启用状态
+void renderer_set_batching_enabled(render_layer_type_t layer, bool enabled) {
+    if (layer < 0 || layer >= RENDER_LAYER_COUNT) {
+        return;
+    }
+    
+    render_opt_set_batching_enabled(layer, enabled);
+}
+
+// 新增API：设置状态排序启用状态
+void renderer_set_state_sorting_enabled(render_layer_type_t layer, bool enabled) {
+    if (layer < 0 || layer >= RENDER_LAYER_COUNT) {
+        return;
+    }
+    
+    render_opt_set_state_sorting_enabled(layer, enabled);
+}
+
+// 新增API：设置剔除启用状态
+void renderer_set_culling_enabled(render_layer_type_t layer, bool enabled) {
+    if (layer < 0 || layer >= RENDER_LAYER_COUNT) {
+        return;
+    }
+    
+    render_opt_set_culling_enabled(layer, enabled);
+}
+
+// 新增API：设置脏区域合并阈值
+void renderer_set_merge_threshold(render_layer_type_t layer, float threshold) {
+    if (layer < 0 || layer >= RENDER_LAYER_COUNT) {
+        return;
+    }
+    
+    render_opt_set_merge_threshold(layer, threshold);
+}
+
+// 新增API：添加绘制调用
+void renderer_add_draw_call(render_layer_type_t layer, const struct draw_call* draw_call) {
+    if (layer < 0 || layer >= RENDER_LAYER_COUNT) {
+        return;
+    }
+    
+    render_opt_add_draw_call(layer, draw_call);
+}
+
+// 新增API：获取渲染优化统计
+void renderer_get_opt_stats(render_layer_type_t layer, struct render_opt_stats* stats) {
+    if (layer < 0 || layer >= RENDER_LAYER_COUNT) {
+        return;
+    }
+    
+    render_opt_get_stats(layer, stats);
 }

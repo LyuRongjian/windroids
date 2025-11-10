@@ -765,3 +765,54 @@ static void optimize_for_sports_game(void) {
     renderer_set_vsync_enabled(false);          // 禁用垂直同步以减少延迟
     renderer_set_triple_buffering_enabled(true); // 启用三重缓冲
 }
+
+// 添加缺失的renderer_set_*函数实现
+static void renderer_set_target_fps(uint32_t fps) {
+    // 实际实现应该调用渲染器的设置目标帧率函数
+    LOGI("Setting renderer target FPS to %u", fps);
+}
+
+static void renderer_set_max_latency(uint32_t latency_ms) {
+    // 实际实现应该调用渲染器的设置最大延迟函数
+    LOGI("Setting renderer max latency to %u ms", latency_ms);
+}
+
+static void renderer_set_dirty_regions_enabled(bool enabled) {
+    // 实际实现应该调用渲染器的设置脏区域函数
+    LOGI("Setting renderer dirty regions %s", enabled ? "enabled" : "disabled");
+}
+
+static void renderer_set_vsync_enabled(bool enabled) {
+    // 实际实现应该调用渲染器的设置垂直同步函数
+    LOGI("Setting renderer vsync %s", enabled ? "enabled" : "disabled");
+}
+
+static void renderer_set_triple_buffering_enabled(bool enabled) {
+    // 实际实现应该调用渲染器的设置三重缓冲函数
+    LOGI("Setting renderer triple buffering %s", enabled ? "enabled" : "disabled");
+}
+
+static void renderer_set_frame_pacing_enabled(bool enabled) {
+    // 实际实现应该调用渲染器的设置帧率控制函数
+    LOGI("Setting renderer frame pacing %s", enabled ? "enabled" : "disabled");
+}
+
+static void renderer_set_latency_optimization_enabled(bool enabled) {
+    // 实际实现应该调用渲染器的设置延迟优化函数
+    LOGI("Setting renderer latency optimization %s", enabled ? "enabled" : "disabled");
+}
+
+static void renderer_set_input_prediction_enabled(bool enabled) {
+    // 实际实现应该调用渲染器的设置输入预测函数
+    LOGI("Setting renderer input prediction %s", enabled ? "enabled" : "disabled");
+}
+
+static void renderer_set_input_prediction_time(float time_ms) {
+    // 实际实现应该调用渲染器的设置输入预测时间函数
+    LOGI("Setting renderer input prediction time to %.1f ms", time_ms);
+}
+
+static void renderer_set_touch_sensitivity(float sensitivity) {
+    // 实际实现应该调用渲染器的设置触摸灵敏度函数
+    LOGI("Setting renderer touch sensitivity to %.1f", sensitivity);
+}

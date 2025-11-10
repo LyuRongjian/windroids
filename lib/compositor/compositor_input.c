@@ -16,13 +16,23 @@
 #define MAX_TOUCH_POINTS 10
 #define GAMEPAD_AXIS_THRESHOLD 0.1f
 #define GAMEPAD_DEADZONE 0.2f
-#define MAX_BATCHED_EVENTS 32
-#define EVENT_BATCH_TIMEOUT_US 1000  // 1ms
+#define MAX_BATCHED_EVENTS 64  // 增加批处理队列大小
+#define EVENT_BATCH_TIMEOUT_US 500  // 减少超时时间，提高响应性
+#define HIGH_PRIORITY_TIMEOUT_US 100  // 高优先级事件的超时时间
+
+// 事件优先级枚举
+typedef enum {
+    INPUT_EVENT_PRIORITY_LOW = 0,      // 低优先级：鼠标移动等
+    INPUT_EVENT_PRIORITY_NORMAL = 1,   // 普通优先级：触摸移动等
+    INPUT_EVENT_PRIORITY_HIGH = 2,     // 高优先级：按钮按下、键盘按键等
+    INPUT_EVENT_PRIORITY_CRITICAL = 3  // 关键优先级：系统事件等
+} input_event_priority_t;
 
 // 事件批处理项
 struct input_event_batch_item {
     struct input_event event;
     uint64_t timestamp;
+    input_event_priority_t priority;
 };
 
 // 输入系统状态
@@ -81,6 +91,25 @@ struct input_system {
     struct input_event_batch_item event_batch[MAX_BATCHED_EVENTS];
     int batch_count;
     uint64_t last_batch_time;
+    uint64_t last_high_priority_time;
+    bool has_high_priority_events;
+    
+    // 游戏模式相关状态
+    struct {
+        float touch_sensitivity;
+        bool prediction_enabled;
+        float prediction_time_ms;
+        uint32_t touch_event_count;
+        uint32_t drag_event_count;
+        uint32_t tap_event_count;
+        uint32_t predicted_input_count;
+        uint32_t accurate_prediction_count;
+        uint64_t total_input_latency;
+        uint32_t input_latency_samples;
+        uint64_t last_input_time;
+        float last_input_x;
+        float last_input_y;
+    } game_mode;
 };
 
 static struct input_system g_input = {0};
@@ -102,6 +131,7 @@ static void handle_gamepad_event(const input_event_t* event);
 static void input_flush_event_batch(void);
 static void input_add_event_to_batch(struct input_event* event);
 static uint64_t input_get_time(void);
+static input_event_priority_t get_event_priority(const input_event_t* event);
 
 // 初始化输入系统
 int compositor_input_init(void) {
@@ -121,6 +151,23 @@ int compositor_input_init(void) {
     // 初始化事件批处理
     g_input.batch_count = 0;
     g_input.last_batch_time = input_get_time();
+    g_input.last_high_priority_time = input_get_time();
+    g_input.has_high_priority_events = false;
+    
+    // 初始化游戏模式相关状态
+    g_input.game_mode.touch_sensitivity = 1.0f;
+    g_input.game_mode.prediction_enabled = false;
+    g_input.game_mode.prediction_time_ms = 8.0f;
+    g_input.game_mode.touch_event_count = 0;
+    g_input.game_mode.drag_event_count = 0;
+    g_input.game_mode.tap_event_count = 0;
+    g_input.game_mode.predicted_input_count = 0;
+    g_input.game_mode.accurate_prediction_count = 0;
+    g_input.game_mode.total_input_latency = 0;
+    g_input.game_mode.input_latency_samples = 0;
+    g_input.game_mode.last_input_time = 0;
+    g_input.game_mode.last_input_x = 0.0f;
+    g_input.game_mode.last_input_y = 0.0f;
     
     // 默认启用冲突解决
     g_input.conflict_resolution_enabled = true;
@@ -152,8 +199,19 @@ void compositor_input_step(void) {
     
     // 检查是否需要刷新事件批处理队列
     uint64_t current_time = input_get_time();
+    
+    // 根据是否有高优先级事件决定使用哪个超时时间
+    uint64_t timeout = g_input.has_high_priority_events ? 
+                       HIGH_PRIORITY_TIMEOUT_US : EVENT_BATCH_TIMEOUT_US;
+    
     if (g_input.batch_count > 0 && 
-        (current_time - g_input.last_batch_time) >= EVENT_BATCH_TIMEOUT_US) {
+        (current_time - g_input.last_batch_time) >= timeout) {
+        input_flush_event_batch();
+    }
+    
+    // 如果有高优先级事件且超过了高优先级超时时间，强制刷新
+    if (g_input.has_high_priority_events && 
+        (current_time - g_input.last_high_priority_time) >= HIGH_PRIORITY_TIMEOUT_US) {
         input_flush_event_batch();
     }
     
@@ -317,6 +375,20 @@ void compositor_input_inject_touch_event(uint32_t touch_id, float x, float y, fl
     // 分发事件
     dispatch_event(&event);
     
+    // 更新游戏模式相关状态
+    g_input.game_mode.touch_event_count++;
+    g_input.game_mode.last_input_time = get_timestamp_ms();
+    g_input.game_mode.last_input_x = x;
+    g_input.game_mode.last_input_y = y;
+    
+    // 计算输入延迟
+    if (g_input.game_mode.last_input_time > 0) {
+        uint64_t current_time = get_timestamp_ms();
+        uint64_t latency = current_time - g_input.game_mode.last_input_time;
+        g_input.game_mode.total_input_latency += latency;
+        g_input.game_mode.input_latency_samples++;
+    }
+    
     pthread_mutex_unlock(&g_input.mutex);
 }
 
@@ -366,6 +438,19 @@ void compositor_input_inject_mouse_event(float x, float y, mouse_button_t button
     // 分发事件
     dispatch_event(&event);
     
+    // 更新游戏模式相关状态
+    g_input.game_mode.last_input_time = get_timestamp_ms();
+    g_input.game_mode.last_input_x = x;
+    g_input.game_mode.last_input_y = y;
+    
+    // 计算输入延迟
+    if (g_input.game_mode.last_input_time > 0) {
+        uint64_t current_time = get_timestamp_ms();
+        uint64_t latency = current_time - g_input.game_mode.last_input_time;
+        g_input.game_mode.total_input_latency += latency;
+        g_input.game_mode.input_latency_samples++;
+    }
+    
     pthread_mutex_unlock(&g_input.mutex);
 }
 
@@ -401,6 +486,17 @@ void compositor_input_inject_mouse_scroll(float delta_x, float delta_y) {
     
     // 分发事件
     dispatch_event(&event);
+    
+    // 更新游戏模式相关状态
+    g_input.game_mode.last_input_time = get_timestamp_ms();
+    
+    // 计算输入延迟
+    if (g_input.game_mode.last_input_time > 0) {
+        uint64_t current_time = get_timestamp_ms();
+        uint64_t latency = current_time - g_input.game_mode.last_input_time;
+        g_input.game_mode.total_input_latency += latency;
+        g_input.game_mode.input_latency_samples++;
+    }
     
     pthread_mutex_unlock(&g_input.mutex);
 }
@@ -446,6 +542,17 @@ void compositor_input_inject_keyboard_event(uint32_t keycode, keyboard_modifier_
     
     // 分发事件
     dispatch_event(&event);
+    
+    // 更新游戏模式相关状态
+    g_input.game_mode.last_input_time = get_timestamp_ms();
+    
+    // 计算输入延迟
+    if (g_input.game_mode.last_input_time > 0) {
+        uint64_t current_time = get_timestamp_ms();
+        uint64_t latency = current_time - g_input.game_mode.last_input_time;
+        g_input.game_mode.total_input_latency += latency;
+        g_input.game_mode.input_latency_samples++;
+    }
     
     pthread_mutex_unlock(&g_input.mutex);
 }
@@ -510,6 +617,17 @@ void compositor_input_inject_gamepad_button_event(uint32_t device_id, gamepad_bu
     
     // 分发事件
     dispatch_event(&event);
+    
+    // 更新游戏模式相关状态
+    g_input.game_mode.last_input_time = get_timestamp_ms();
+    
+    // 计算输入延迟
+    if (g_input.game_mode.last_input_time > 0) {
+        uint64_t current_time = get_timestamp_ms();
+        uint64_t latency = current_time - g_input.game_mode.last_input_time;
+        g_input.game_mode.total_input_latency += latency;
+        g_input.game_mode.input_latency_samples++;
+    }
     
     pthread_mutex_unlock(&g_input.mutex);
 }
@@ -705,8 +823,21 @@ static void dispatch_event(const input_event_t* event) {
     
     // 检查是否需要立即刷新批处理
     uint64_t current_time = input_get_time();
+    input_event_priority_t priority = get_event_priority(event);
+    
+    // 高优先级事件使用更短的超时时间
+    uint64_t timeout = (priority >= INPUT_EVENT_PRIORITY_HIGH) ? 
+                       HIGH_PRIORITY_TIMEOUT_US : EVENT_BATCH_TIMEOUT_US;
+    
+    // 如果有高优先级事件，使用高优先级超时
+    if (g_input.has_high_priority_events) {
+        timeout = HIGH_PRIORITY_TIMEOUT_US;
+    }
+    
     if (g_input.batch_count >= MAX_BATCHED_EVENTS || 
-        (current_time - g_input.last_batch_time) >= EVENT_BATCH_TIMEOUT_US) {
+        (current_time - g_input.last_batch_time) >= timeout ||
+        (g_input.has_high_priority_events && 
+         (current_time - g_input.last_high_priority_time) >= HIGH_PRIORITY_TIMEOUT_US)) {
         input_flush_event_batch();
     }
 }
@@ -798,6 +929,23 @@ static bool resolve_input_conflicts(const input_event_t* event) {
 
 // 添加事件到批处理队列
 static void input_add_event_to_batch(struct input_event* event) {
+    input_event_priority_t priority = get_event_priority(event);
+    
+    // 如果是高优先级事件且批处理队列中有低优先级事件，考虑立即刷新
+    if (priority >= INPUT_EVENT_PRIORITY_HIGH && g_input.batch_count > 0) {
+        bool has_low_priority = false;
+        for (int i = 0; i < g_input.batch_count; i++) {
+            if (g_input.event_batch[i].priority < priority) {
+                has_low_priority = true;
+                break;
+            }
+        }
+        
+        if (has_low_priority) {
+            input_flush_event_batch();
+        }
+    }
+    
     if (g_input.batch_count >= MAX_BATCHED_EVENTS) {
         // 批处理队列已满，先刷新
         input_flush_event_batch();
@@ -806,13 +954,32 @@ static void input_add_event_to_batch(struct input_event* event) {
     // 添加事件到批处理队列
     g_input.event_batch[g_input.batch_count].event = *event;
     g_input.event_batch[g_input.batch_count].timestamp = input_get_time();
+    g_input.event_batch[g_input.batch_count].priority = priority;
     g_input.batch_count++;
+    
+    // 更新高优先级事件标志
+    if (priority >= INPUT_EVENT_PRIORITY_HIGH) {
+        g_input.has_high_priority_events = true;
+        g_input.last_high_priority_time = input_get_time();
+    }
 }
 
 // 刷新事件批处理队列
 static void input_flush_event_batch(void) {
     if (g_input.batch_count == 0) {
         return;
+    }
+    
+    // 按优先级排序事件（简单冒泡排序，因为队列通常很小）
+    for (int i = 0; i < g_input.batch_count - 1; i++) {
+        for (int j = 0; j < g_input.batch_count - i - 1; j++) {
+            if (g_input.event_batch[j].priority < g_input.event_batch[j + 1].priority) {
+                // 交换事件
+                struct input_event_batch_item temp = g_input.event_batch[j];
+                g_input.event_batch[j] = g_input.event_batch[j + 1];
+                g_input.event_batch[j + 1] = temp;
+            }
+        }
     }
     
     // 分发所有批处理的事件
@@ -827,6 +994,39 @@ static void input_flush_event_batch(void) {
     // 重置批处理队列
     g_input.batch_count = 0;
     g_input.last_batch_time = input_get_time();
+    g_input.has_high_priority_events = false;
+}
+
+// 获取事件优先级
+static input_event_priority_t get_event_priority(const input_event_t* event) {
+    // 键盘事件通常是高优先级
+    if (event->device_type == INPUT_DEVICE_TYPE_KEYBOARD) {
+        return INPUT_EVENT_PRIORITY_HIGH;
+    }
+    
+    // 按钮按下/释放事件是高优先级
+    if (event->type == INPUT_EVENT_TYPE_MOUSE_BUTTON_DOWN ||
+        event->type == INPUT_EVENT_TYPE_MOUSE_BUTTON_UP ||
+        event->type == INPUT_EVENT_TYPE_TOUCH_DOWN ||
+        event->type == INPUT_EVENT_TYPE_TOUCH_UP ||
+        event->type == INPUT_EVENT_TYPE_GAMEPAD_BUTTON_DOWN ||
+        event->type == INPUT_EVENT_TYPE_GAMEPAD_BUTTON_UP) {
+        return INPUT_EVENT_PRIORITY_HIGH;
+    }
+    
+    // 鼠标移动和触摸移动是普通优先级
+    if (event->type == INPUT_EVENT_TYPE_MOUSE_MOVE ||
+        event->type == INPUT_EVENT_TYPE_TOUCH_MOVE) {
+        return INPUT_EVENT_PRIORITY_NORMAL;
+    }
+    
+    // 游戏手柄轴移动是低优先级
+    if (event->type == INPUT_EVENT_TYPE_GAMEPAD_AXIS_MOVE) {
+        return INPUT_EVENT_PRIORITY_LOW;
+    }
+    
+    // 默认为普通优先级
+    return INPUT_EVENT_PRIORITY_NORMAL;
 }
 
 // 获取当前时间戳（微秒）
@@ -834,4 +1034,125 @@ static uint64_t input_get_time(void) {
     struct timespec ts;
     clock_gettime(CLOCK_MONOTONIC, &ts);
     return (uint64_t)ts.tv_sec * 1000000 + (uint64_t)ts.tv_nsec / 1000;
+}
+
+// 游戏模式相关函数实现
+
+// 设置触摸灵敏度
+void input_set_touch_sensitivity(float sensitivity) {
+    if (!g_input.initialized) {
+        return;
+    }
+    
+    pthread_mutex_lock(&g_input.mutex);
+    g_input.game_mode.touch_sensitivity = sensitivity;
+    LOGI("Touch sensitivity set to %.2f", sensitivity);
+    pthread_mutex_unlock(&g_input.mutex);
+}
+
+// 启用/禁用输入预测
+void input_set_prediction_enabled(bool enabled) {
+    if (!g_input.initialized) {
+        return;
+    }
+    
+    pthread_mutex_lock(&g_input.mutex);
+    g_input.game_mode.prediction_enabled = enabled;
+    LOGI("Input prediction %s", enabled ? "enabled" : "disabled");
+    pthread_mutex_unlock(&g_input.mutex);
+}
+
+// 设置输入预测时间
+void input_set_prediction_time(float time_ms) {
+    if (!g_input.initialized) {
+        return;
+    }
+    
+    pthread_mutex_lock(&g_input.mutex);
+    g_input.game_mode.prediction_time_ms = time_ms;
+    LOGI("Input prediction time set to %.2f ms", time_ms);
+    pthread_mutex_unlock(&g_input.mutex);
+}
+
+// 获取平均输入延迟
+float input_get_average_latency(void) {
+    if (!g_input.initialized) {
+        return 0.0f;
+    }
+    
+    pthread_mutex_lock(&g_input.mutex);
+    float latency = 0.0f;
+    if (g_input.game_mode.input_latency_samples > 0) {
+        latency = (float)g_input.game_mode.total_input_latency / g_input.game_mode.input_latency_samples;
+    } else {
+        latency = 16.0f; // 默认16ms延迟
+    }
+    pthread_mutex_unlock(&g_input.mutex);
+    
+    return latency;
+}
+
+// 获取触摸事件计数
+uint32_t input_get_touch_event_count(void) {
+    if (!g_input.initialized) {
+        return 0;
+    }
+    
+    pthread_mutex_lock(&g_input.mutex);
+    uint32_t count = g_input.game_mode.touch_event_count;
+    pthread_mutex_unlock(&g_input.mutex);
+    
+    return count;
+}
+
+// 获取拖动事件计数
+uint32_t input_get_drag_event_count(void) {
+    if (!g_input.initialized) {
+        return 0;
+    }
+    
+    pthread_mutex_lock(&g_input.mutex);
+    uint32_t count = g_input.game_mode.drag_event_count;
+    pthread_mutex_unlock(&g_input.mutex);
+    
+    return count;
+}
+
+// 获取点击事件计数
+uint32_t input_get_tap_event_count(void) {
+    if (!g_input.initialized) {
+        return 0;
+    }
+    
+    pthread_mutex_lock(&g_input.mutex);
+    uint32_t count = g_input.game_mode.tap_event_count;
+    pthread_mutex_unlock(&g_input.mutex);
+    
+    return count;
+}
+
+// 获取预测输入计数
+uint32_t input_get_predicted_input_count(void) {
+    if (!g_input.initialized) {
+        return 0;
+    }
+    
+    pthread_mutex_lock(&g_input.mutex);
+    uint32_t count = g_input.game_mode.predicted_input_count;
+    pthread_mutex_unlock(&g_input.mutex);
+    
+    return count;
+}
+
+// 获取准确预测计数
+uint32_t input_get_accurate_prediction_count(void) {
+    if (!g_input.initialized) {
+        return 0;
+    }
+    
+    pthread_mutex_lock(&g_input.mutex);
+    uint32_t count = g_input.game_mode.accurate_prediction_count;
+    pthread_mutex_unlock(&g_input.mutex);
+    
+    return count;
 }

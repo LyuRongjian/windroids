@@ -33,6 +33,17 @@ download_extract() {
 }
 
 build_host_wayland_scanner() {
+    local scanner="$HOST_TOOLS_DIR/bin/wayland-scanner"
+    local marker="$HOST_TOOLS_DIR/.wayland-scanner-built"
+    
+    # 检查是否已经构建完成
+    if [ -f "$marker" ] && [ -x "$scanner" ]; then
+        log "⏭️ wayland-scanner already built (found $marker), skipping"
+        export PATH="$HOST_TOOLS_DIR/bin:$PATH"
+        export WAYLAND_SCANNER="$scanner"
+        return 0
+    fi
+    
     log "🔧 Build host wayland-scanner"
     if [ ! -d "$SRC_DIR/wayland" ]; then
         log "❌ wayland source missing"
@@ -44,8 +55,12 @@ build_host_wayland_scanner() {
     ninja -C build-host || { popd >/dev/null; return 1; }
     ninja -C build-host install || { popd >/dev/null; return 1; }
     popd >/dev/null
-
-    local scanner="$HOST_TOOLS_DIR/bin/wayland-scanner"
+    
+    # 构建成功后创建标记文件
+    if [ -x "$scanner" ]; then
+        touch "$marker"
+        log "✅ Created build marker at $marker"
+    fi
     if [ -x "$scanner" ]; then
         export PATH="$HOST_TOOLS_DIR/bin:$PATH"
         export WAYLAND_SCANNER="$scanner"

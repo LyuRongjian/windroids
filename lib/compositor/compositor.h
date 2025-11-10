@@ -6,6 +6,8 @@
 #include "compositor_perf_opt.h"
 #include "compositor_game.h"
 #include "compositor_monitor.h"
+#include "compositor_memory_pool_opt.h"
+#include "memory_pool.h"
 
 #ifdef __cplusplus
 extern "C" {
@@ -49,6 +51,18 @@ void compositor_set_size(int width, int height);
 
 // 获取当前帧率
 float compositor_get_fps(void);
+
+// 内存池相关API
+int compositor_set_memory_pool_enabled(bool enabled);
+bool compositor_is_memory_pool_enabled(void);
+int compositor_set_default_memory_pool(struct memory_pool* pool);
+struct memory_pool* compositor_get_default_memory_pool(void);
+int compositor_set_compositor_memory_pool(struct memory_pool* pool);
+struct memory_pool* compositor_get_compositor_memory_pool(void);
+int compositor_get_memory_pool_stats(struct memory_pool_stats* stats);
+void* compositor_memory_alloc(size_t size);
+void* compositor_memory_realloc(void* ptr, size_t size);
+void compositor_memory_free(void* ptr);
 
 // 性能优化相关API
 int compositor_set_perf_opt_enabled(bool enabled);

@@ -666,4 +666,53 @@ static int config_parse_line(const char* line) {
             item->modified = (item->value.float_val != item->default_value.float_default);
             break;
         case CONFIG_TYPE_BOOL:
-            if (strcmp(value, "
+            if (strcmp(value, "true") == 0 || strcmp(value, "1") == 0) {
+                item->value.bool_val = true;
+            } else if (strcmp(value, "false") == 0 || strcmp(value, "0") == 0) {
+                item->value.bool_val = false;
+            } else {
+                result = -1;
+            }
+            item->modified = (item->value.bool_val != item->default_value.bool_default);
+            break;
+        case CONFIG_TYPE_STRING:
+            if (item->value.string_val) {
+                free(item->value.string_val);
+            }
+            item->value.string_val = strdup(value);
+            item->modified = (strcmp(item->value.string_val, item->default_value.string_default) != 0);
+            break;
+        default:
+            result = -1;
+            break;
+    }
+    
+    free(line_copy);
+    return result;
+}
+
+// 内部函数：写入配置项到文件
+static int config_write_item(FILE* file, struct config_item* item) {
+    if (!file || !item) {
+        return -1;
+    }
+    
+    switch (item->type) {
+        case CONFIG_TYPE_INT:
+            fprintf(file, "%s=%d\n", item->name, item->value.int_val);
+            break;
+        case CONFIG_TYPE_FLOAT:
+            fprintf(file, "%s=%f\n", item->name, item->value.float_val);
+            break;
+        case CONFIG_TYPE_BOOL:
+            fprintf(file, "%s=%s\n", item->name, item->value.bool_val ? "true" : "false");
+            break;
+        case CONFIG_TYPE_STRING:
+            fprintf(file, "%s=\"%s\"\n", item->name, item->value.string_val);
+            break;
+        default:
+            return -1;
+    }
+    
+    return 0;
+}

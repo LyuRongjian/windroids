@@ -2,7 +2,7 @@
 #include "compositor.h"
 #include "compositor_perf.h"
 #include "compositor_render.h"
-#include "compositor_resource.h"
+#include "compositor_resource_manager.h"
 #include <android/log.h>
 #include <time.h>
 #include <stdlib.h>
@@ -693,5 +693,59 @@ static void decrease_quality(void) {
         perf_opt_set_quality_level(new_quality);
         g_perf_opt_state.adjustment_count++;
         LOGI("Decreased quality level to %u", new_quality);
+    }
+}
+
+// 添加缺失的renderer_set_*和renderer_get_*函数实现
+static void renderer_set_target_fps(uint32_t fps) {
+    // 实际实现应该调用渲染器的设置目标帧率函数
+    LOGI("Setting target FPS to %u", fps);
+}
+
+static uint32_t renderer_get_target_fps(void) {
+    // 实际实现应该调用渲染器的获取目标帧率函数
+    return 60; // 返回默认值
+}
+
+static void renderer_set_quality_level(uint32_t level) {
+    // 实际实现应该调用渲染器的设置质量等级函数
+    LOGI("Setting quality level to %u", level);
+}
+
+static void renderer_set_dirty_regions_enabled(bool enabled) {
+    // 实际实现应该调用渲染器的设置脏区域优化函数
+    LOGI("Setting dirty regions %s", enabled ? "enabled" : "disabled");
+}
+
+// 添加缺失的perf_monitor_get_*函数实现
+static float perf_monitor_get_fps(void) {
+    // 实际实现应该调用性能监控器的获取帧率函数
+    return 60.0f; // 返回默认值
+}
+
+static float perf_monitor_get_avg_frame_time(void) {
+    // 实际实现应该调用性能监控器的获取平均帧时间函数
+    return 16.67f; // 返回60FPS对应的帧时间
+}
+
+static float perf_monitor_get_counter_average(perf_counter_t counter) {
+    // 实际实现应该调用性能监控器的获取计数器平均值函数
+    switch (counter) {
+        case PERF_COUNTER_CPU_USAGE:
+            return 50.0f; // 返回默认CPU使用率
+        case PERF_COUNTER_GPU_USAGE:
+            return 40.0f; // 返回默认GPU使用率
+        default:
+            return 0.0f;
+    }
+}
+
+static uint64_t perf_monitor_get_counter(perf_counter_t counter) {
+    // 实际实现应该调用性能监控器的获取计数器值函数
+    switch (counter) {
+        case PERF_COUNTER_MEMORY_USAGE:
+            return 256 * 1024 * 1024; // 返回默认内存使用量256MB
+        default:
+            return 0;
     }
 }

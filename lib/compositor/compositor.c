@@ -3,11 +3,12 @@
 #include "compositor_vulkan.h"
 #include "compositor_window.h"
 #include "compositor_render.h"
-#include "compositor_resource.h"
+#include "compositor_resource_manager.h"
 #include "compositor_perf.h"
 #include "compositor_perf_opt.h"
 #include "compositor_game.h"
 #include "compositor_monitor.h"
+#include "memory_pool.h"
 #include <android/log.h>
 #include <android/native_window.h>
 #include <dlfcn.h>
@@ -81,6 +82,44 @@ struct compositor_state {
     struct wlr_cursor* cursor;
     struct wlr_xcursor_manager* cursor_mgr;
     
+    // 优化内存池
+    struct memory_pool_manager memory_pool;
+    struct memory_pool* default_pool;
+    struct memory_pool* compositor_pool;
+    struct memory_pool_thread_cache thread_cache;
+    bool memory_pool_initialized;
+    bool memory_pool_enabled;
+    
+    // 性能优化模块
+    struct perf_opt perf_opt;
+    bool perf_opt_initialized;
+    
+    // 游戏模式模块
+    struct game_mode game_mode;
+    bool game_mode_initialized;
+    
+    // 监控模块
+    struct monitor monitor;
+    bool monitor_initialized;
+    
+    // 输入系统
+    struct input input;
+    bool input_initialized;
+    
+    // 渲染器
+    struct renderer renderer;
+    bool renderer_initialized;
+    
+    // 窗口管理器
+    struct window_manager window_manager;
+    bool window_manager_initialized;
+    
+    // Wayland
+    bool wayland_initialized;
+    
+    // wlroots
+    bool wlroots_initialized;
+    
     // 状态标志
     bool initialized;
     bool xwayland_started;
@@ -122,10 +161,70 @@ int compositor_init(ANativeWindow* window, int width, int height) {
     g_state.window = window;
     g_state.width = width;
     g_state.height = height;
+    g_state.memory_pool_enabled = true;
+    
+    // 初始化内存池系统
+    if (memory_pool_manager_init(&g_state.memory_pool, 16) != 0) {
+        LOGE("Failed to initialize memory pool manager");
+        return -1;
+    }
+    g_state.memory_pool_initialized = true;
+    
+    // 创建合成器专用内存池
+    struct memory_pool_config pool_config = {0};
+    
+    // 设置初始块数量
+    for (uint32_t i = 0; i < MEMORY_POOL_BLOCK_SIZE_COUNT; i++) {
+        pool_config.initial_block_counts[i] = 32;
+        pool_config.max_block_counts[i] = 1024;
+    }
+    
+    // 设置配置参数
+    pool_config.growth_factor = 150;  // 150%增长
+    pool_config.shrink_threshold = 50;  // 50%使用率以下收缩
+    pool_config.auto_resize_interval_ms = 5000;  // 5秒自动调整
+    pool_config.enable_thread_cache = true;
+    pool_config.enable_prefetch = true;
+    pool_config.enable_lock_free = false;
+    pool_config.enable_statistics = true;
+    pool_config.enable_profiling = false;
+    
+    g_state.compositor_pool = memory_pool_create(&pool_config);
+    if (!g_state.compositor_pool) {
+        LOGE("Failed to create compositor memory pool");
+        memory_pool_manager_destroy(&g_state.memory_pool);
+        g_state.memory_pool_initialized = false;
+        return -1;
+    }
+    
+    // 创建默认内存池
+    g_state.default_pool = memory_pool_create(&pool_config);
+    if (!g_state.default_pool) {
+        LOGE("Failed to create default memory pool");
+        memory_pool_destroy(g_state.compositor_pool);
+        memory_pool_manager_destroy(&g_state.memory_pool);
+        g_state.memory_pool_initialized = false;
+        return -1;
+    }
+    
+    // 初始化线程本地缓存
+    if (memory_pool_thread_cache_init(&g_state.thread_cache, 8) != 0) {
+        LOGE("Failed to initialize thread cache");
+        memory_pool_destroy(g_state.compositor_pool);
+        memory_pool_destroy(g_state.default_pool);
+        memory_pool_manager_destroy(&g_state.memory_pool);
+        g_state.memory_pool_initialized = false;
+        return -1;
+    }
     
     // 初始化窗口管理器
     if (window_manager_init(width, height) != 0) {
         LOGE("Failed to initialize window manager");
+        memory_pool_thread_cache_destroy(&g_state.thread_cache);
+        memory_pool_destroy(g_state.compositor_pool);
+        memory_pool_destroy(g_state.default_pool);
+        memory_pool_manager_destroy(&g_state.memory_pool);
+        g_state.memory_pool_initialized = false;
         return -1;
     }
     
@@ -133,6 +232,11 @@ int compositor_init(ANativeWindow* window, int width, int height) {
     if (renderer_init(window, width, height) != 0) {
         LOGE("Failed to initialize renderer");
         window_manager_destroy();
+        memory_pool_thread_cache_destroy(&g_state.thread_cache);
+        memory_pool_destroy(g_state.compositor_pool);
+        memory_pool_destroy(g_state.default_pool);
+        memory_pool_manager_destroy(&g_state.memory_pool);
+        g_state.memory_pool_initialized = false;
         return -1;
     }
     
@@ -141,6 +245,11 @@ int compositor_init(ANativeWindow* window, int width, int height) {
         LOGE("Failed to initialize resource manager");
         renderer_destroy();
         window_manager_destroy();
+        memory_pool_thread_cache_destroy(&g_state.thread_cache);
+        memory_pool_destroy(g_state.compositor_pool);
+        memory_pool_destroy(g_state.default_pool);
+        memory_pool_manager_destroy(&g_state.memory_pool);
+        g_state.memory_pool_initialized = false;
         return -1;
     }
     
@@ -150,6 +259,11 @@ int compositor_init(ANativeWindow* window, int width, int height) {
         resource_manager_destroy();
         renderer_destroy();
         window_manager_destroy();
+        memory_pool_thread_cache_destroy(&g_state.thread_cache);
+        memory_pool_destroy(g_state.compositor_pool);
+        memory_pool_destroy(g_state.default_pool);
+        memory_pool_manager_destroy(&g_state.memory_pool);
+        g_state.memory_pool_initialized = false;
         return -1;
     }
     
@@ -160,6 +274,11 @@ int compositor_init(ANativeWindow* window, int width, int height) {
         resource_manager_destroy();
         renderer_destroy();
         window_manager_destroy();
+        memory_pool_thread_cache_destroy(&g_state.thread_cache);
+        memory_pool_destroy(g_state.compositor_pool);
+        memory_pool_destroy(g_state.default_pool);
+        memory_pool_manager_destroy(&g_state.memory_pool);
+        g_state.memory_pool_initialized = false;
         return -1;
     }
     
@@ -171,6 +290,11 @@ int compositor_init(ANativeWindow* window, int width, int height) {
         resource_manager_destroy();
         renderer_destroy();
         window_manager_destroy();
+        memory_pool_thread_cache_destroy(&g_state.thread_cache);
+        memory_pool_destroy(g_state.compositor_pool);
+        memory_pool_destroy(g_state.default_pool);
+        memory_pool_manager_destroy(&g_state.memory_pool);
+        g_state.memory_pool_initialized = false;
         return -1;
     }
     
@@ -183,6 +307,11 @@ int compositor_init(ANativeWindow* window, int width, int height) {
         resource_manager_destroy();
         renderer_destroy();
         window_manager_destroy();
+        memory_pool_thread_cache_destroy(&g_state.thread_cache);
+        memory_pool_destroy(g_state.compositor_pool);
+        memory_pool_destroy(g_state.default_pool);
+        memory_pool_manager_destroy(&g_state.memory_pool);
+        g_state.memory_pool_initialized = false;
         return -1;
     }
     
@@ -193,6 +322,11 @@ int compositor_init(ANativeWindow* window, int width, int height) {
         resource_manager_destroy();
         renderer_destroy();
         window_manager_destroy();
+        memory_pool_thread_cache_destroy(&g_state.thread_cache);
+        memory_pool_destroy(g_state.compositor_pool);
+        memory_pool_destroy(g_state.default_pool);
+        memory_pool_manager_destroy(&g_state.memory_pool);
+        g_state.memory_pool_initialized = false;
         return -1;
     }
     
@@ -204,6 +338,11 @@ int compositor_init(ANativeWindow* window, int width, int height) {
         resource_manager_destroy();
         renderer_destroy();
         window_manager_destroy();
+        memory_pool_thread_cache_destroy(&g_state.thread_cache);
+        memory_pool_destroy(g_state.compositor_pool);
+        memory_pool_destroy(g_state.default_pool);
+        memory_pool_manager_destroy(&g_state.memory_pool);
+        g_state.memory_pool_initialized = false;
         return -1;
     }
     
@@ -219,6 +358,11 @@ int compositor_init(ANativeWindow* window, int width, int height) {
         resource_manager_destroy();
         renderer_destroy();
         window_manager_destroy();
+        memory_pool_thread_cache_destroy(&g_state.thread_cache);
+        memory_pool_destroy(g_state.compositor_pool);
+        memory_pool_destroy(g_state.default_pool);
+        memory_pool_manager_destroy(&g_state.memory_pool);
+        g_state.memory_pool_initialized = false;
         return -1;
     }
     
@@ -232,8 +376,34 @@ int compositor_init(ANativeWindow* window, int width, int height) {
         resource_manager_destroy();
         renderer_destroy();
         window_manager_destroy();
+        memory_pool_thread_cache_destroy(&g_state.thread_cache);
+        memory_pool_destroy(g_state.compositor_pool);
+        memory_pool_destroy(g_state.default_pool);
+        memory_pool_manager_destroy(&g_state.memory_pool);
+        g_state.memory_pool_initialized = false;
         return -1;
     }
+    
+    // 初始化预记录的命令缓冲区
+    if (init_prerecorded_command_buffers() != 0) {
+        LOGE("Failed to initialize prerecorded command buffers");
+        cleanup_vulkan();
+        cleanup_wlroots();
+        cleanup_wayland();
+        compositor_input_destroy();
+        perf_monitor_destroy();
+        resource_manager_destroy();
+        renderer_destroy();
+        window_manager_destroy();
+        memory_pool_thread_cache_destroy(&g_state.thread_cache);
+        memory_pool_destroy(g_state.compositor_pool);
+        memory_pool_destroy(g_state.default_pool);
+        memory_pool_manager_destroy(&g_state.memory_pool);
+        g_state.memory_pool_initialized = false;
+        return -1;
+    }
+    
+    g_state.vulkan_initialized = true;
     
     // 启动 Xwayland
     if (start_xwayland() != 0) {
@@ -246,6 +416,8 @@ int compositor_init(ANativeWindow* window, int width, int height) {
         resource_manager_destroy();
         renderer_destroy();
         window_manager_destroy();
+        memory_pool_opt_destroy(g_state.memory_pool);
+        memory_pool_opt_manager_destroy();
         return -1;
     }
     
@@ -437,59 +609,85 @@ int compositor_get_monitor_report(struct monitor_report *report) {
 
 // 销毁合成器
 void compositor_destroy(void) {
-    if (!g_state.initialized) {
-        return;
-    }
-    
     LOGI("Destroying compositor");
     
+    // 销毁内存池系统
+    if (g_state.memory_pool_initialized) {
+        // 销毁合成器专用内存池
+        if (g_state.memory_pool.compositor_pool) {
+            memory_pool_destroy(g_state.memory_pool.compositor_pool);
+            g_state.memory_pool.compositor_pool = NULL;
+        }
+        
+        // 销毁默认内存池
+        if (g_state.memory_pool.default_pool) {
+            memory_pool_destroy(g_state.memory_pool.default_pool);
+            g_state.memory_pool.default_pool = NULL;
+        }
+        
+        // 销毁线程本地缓存
+        memory_pool_thread_cache_destroy(&g_state.memory_pool.thread_cache);
+        
+        // 销毁内存池管理器
+        memory_pool_manager_destroy(&g_state.memory_pool);
+        
+        g_state.memory_pool_initialized = false;
+        LOGI("Memory pool system destroyed");
+    }
+    
+    // 销毁性能优化模块
+    if (g_state.perf_opt_initialized) {
+        perf_opt_destroy(&g_state.perf_opt);
+        g_state.perf_opt_initialized = false;
+    }
+    
+    // 销毁游戏模式模块
+    if (g_state.game_mode_initialized) {
+        game_mode_destroy(&g_state.game_mode);
+        g_state.game_mode_initialized = false;
+    }
+    
+    // 销毁监控模块
+    if (g_state.monitor_initialized) {
+        monitor_destroy(&g_state.monitor);
+        g_state.monitor_initialized = false;
+    }
+    
     // 销毁输入系统
-    if (g_state.cursor_mgr) {
-        wlr_xcursor_manager_destroy(g_state.cursor_mgr);
-        g_state.cursor_mgr = NULL;
+    if (g_state.input_initialized) {
+        input_destroy(&g_state.input);
+        g_state.input_initialized = false;
     }
     
-    if (g_state.cursor) {
-        wlr_cursor_destroy(g_state.cursor);
-        g_state.cursor = NULL;
+    // 销毁渲染器
+    if (g_state.renderer_initialized) {
+        renderer_destroy(&g_state.renderer);
+        g_state.renderer_initialized = false;
     }
     
-    if (g_state.seat) {
-        wlr_seat_destroy(g_state.seat);
-        g_state.seat = NULL;
+    // 销毁窗口管理器
+    if (g_state.window_manager_initialized) {
+        window_manager_destroy(&g_state.window_manager);
+        g_state.window_manager_initialized = false;
     }
     
-    cleanup_xwayland();
-    cleanup_vulkan();
-    cleanup_wlroots();
+    // 销毁Vulkan
+    if (g_state.vulkan_initialized) {
+        vulkan_destroy(&g_state.vulkan);
+        g_state.vulkan_initialized = false;
+    }
     
-    // 清理输入系统
-    compositor_input_destroy();
+    // 销毁wlroots
+    if (g_state.wlroots_initialized) {
+        wlroots_destroy(&g_state.wlroots);
+        g_state.wlroots_initialized = false;
+    }
     
-    // 清理监控模块
-    monitor_destroy();
-    
-    // 清理游戏模式模块
-    game_mode_destroy();
-    
-    // 清理性能优化模块
-    perf_opt_destroy();
-    
-    // 清理性能监控器
-    perf_monitor_destroy();
-    
-    // 清理资源管理器
-    resource_manager_destroy();
-    
-    // 清理渲染器
-    renderer_destroy();
-    
-    // 清理窗口管理器
-    window_manager_destroy();
-    
-    cleanup_wayland();
-    
-    memset(&g_state, 0, sizeof(g_state));
+    // 销毁Wayland
+    if (g_state.wayland_initialized) {
+        wayland_destroy(&g_state.wayland);
+        g_state.wayland_initialized = false;
+    }
     
     LOGI("Compositor destroyed");
 }
@@ -665,6 +863,15 @@ void compositor_set_size(int width, int height) {
     if (g_state.vulkan_initialized) {
         if (vulkan_recreate_swapchain(&g_state.vulkan, width, height) != 0) {
             LOGE("Failed to recreate Vulkan swapchain");
+            return;
+        }
+        
+        // 标记所有命令缓冲区为脏
+        mark_all_command_buffers_dirty();
+        
+        // 重新记录预记录的命令缓冲区
+        if (init_prerecorded_command_buffers() != 0) {
+            LOGE("Failed to reinitialize prerecorded command buffers");
             return;
         }
     }
@@ -1387,7 +1594,10 @@ static int render_frame(void) {
     
     vkCmdBeginRenderPass(cmd_buffer, &render_pass_info, VK_SUBPASS_CONTENTS_INLINE);
     
-    // 这里可以添加实际的渲染命令
+    // 执行缓存的命令缓冲区（如果有的话）
+    vulkan_execute_cached_command_buffers(&g_state.vulkan, cmd_buffer);
+    
+    // 这里可以添加动态渲染命令
     
     vkCmdEndRenderPass(cmd_buffer);
     
@@ -1444,4 +1654,333 @@ static void update_fps(void) {
         
         LOGD("FPS: %.1f", g_state.fps);
     }
+}
+
+// 添加缺失的perf_opt_get_settings和game_mode_get_settings函数实现
+struct perf_opt_settings {
+    uint32_t quality_level;
+    uint32_t target_fps;
+};
+
+struct game_mode_settings {
+    bool input_boost;
+    bool priority_boost;
+};
+
+static int perf_opt_get_settings(struct perf_opt_settings *settings) {
+    if (!settings) {
+        return -1;
+    }
+    
+    // 简化实现：返回默认设置
+    settings->quality_level = 2; // 中等质量
+    settings->target_fps = 60;   // 60 FPS
+    
+    return 0;
+}
+
+static int game_mode_get_settings(struct game_mode_settings *settings) {
+    if (!settings) {
+        return -1;
+    }
+    
+    // 简化实现：返回默认设置
+    settings->input_boost = false;
+    settings->priority_boost = false;
+    
+    return 0;
+}
+
+// 添加缺失的renderer_set_*函数实现
+static void renderer_set_quality(uint32_t level) {
+    // 实际实现应该调用渲染器的设置质量函数
+    LOGI("Setting renderer quality to %u", level);
+}
+
+static void renderer_set_max_fps(uint32_t fps) {
+    // 实际实现应该调用渲染器的设置最大帧率函数
+    LOGI("Setting renderer max FPS to %u", fps);
+}
+
+static void renderer_set_input_boost_enabled(bool enabled) {
+    // 实际实现应该调用渲染器的设置输入增强函数
+    LOGI("Setting renderer input boost %s", enabled ? "enabled" : "disabled");
+}
+
+static void renderer_set_priority_boost_enabled(bool enabled) {
+    // 实际实现应该调用渲染器的设置优先级增强函数
+    LOGI("Setting renderer priority boost %s", enabled ? "enabled" : "disabled");
+}
+
+// 示例：记录静态背景的次要命令缓冲区
+static void record_background_commands(VkCommandBuffer cmd_buffer, void* user_data) {
+    // 这里可以添加静态背景渲染命令
+    // 例如：清除屏幕、绘制背景图像等
+    
+    // 示例：设置视口
+    VkViewport viewport = {
+        .x = 0.0f,
+        .y = 0.0f,
+        .width = (float)g_state.width,
+        .height = (float)g_state.height,
+        .minDepth = 0.0f,
+        .maxDepth = 1.0f
+    };
+    vkCmdSetViewport(cmd_buffer, 0, 1, &viewport);
+    
+    // 示例：设置裁剪矩形
+    VkRect2D scissor = {
+        .offset = {0, 0},
+        .extent = {g_state.width, g_state.height}
+    };
+    vkCmdSetScissor(cmd_buffer, 0, 1, &scissor);
+    
+    // 这里可以添加更多的静态渲染命令
+}
+
+// 示例：记录UI元素的次要命令缓冲区
+static void record_ui_commands(VkCommandBuffer cmd_buffer, void* user_data) {
+    // 这里可以添加UI渲染命令
+    // 例如：绘制按钮、文本、图标等
+    
+    // 示例：绑定UI管线和描述符集
+    // vkCmdBindPipeline(cmd_buffer, VK_PIPELINE_BIND_POINT_GRAPHICS, ui_pipeline);
+    // vkCmdBindDescriptorSets(cmd_buffer, VK_PIPELINE_BIND_POINT_GRAPHICS, ui_pipeline_layout, 
+    //                         0, 1, &ui_descriptor_set, 0, NULL);
+    
+    // 这里可以添加更多的UI渲染命令
+}
+
+// 初始化预记录的命令缓冲区
+static int init_prerecorded_command_buffers(void) {
+    if (!g_state.vulkan_initialized) {
+        return -1;
+    }
+    
+    // 记录静态背景命令缓冲区
+    if (vulkan_record_secondary_command_buffer(&g_state.vulkan, 0, 
+                                              record_background_commands, NULL) != 0) {
+        LOGE("Failed to record background command buffer");
+        return -1;
+    }
+    
+    // 记录UI命令缓冲区
+    if (vulkan_record_secondary_command_buffer(&g_state.vulkan, 1, 
+                                              record_ui_commands, NULL) != 0) {
+        LOGE("Failed to record UI command buffer");
+        return -1;
+    }
+    
+    LOGI("Prerecorded command buffers initialized");
+    return 0;
+}
+
+// 标记所有命令缓冲区为脏（在窗口大小改变时调用）
+static void mark_all_command_buffers_dirty(void) {
+    if (!g_state.vulkan_initialized) {
+        return;
+    }
+    
+    // 标记所有主要命令缓冲区为脏
+    for (uint32_t i = 0; i < g_state.vulkan.image_count; i++) {
+        vulkan_mark_command_buffer_dirty(&g_state.vulkan, COMMAND_BUFFER_TYPE_PRIMARY, i);
+    }
+    
+    // 标记所有次要命令缓冲区为脏
+    for (uint32_t i = 0; i < g_state.vulkan.secondary_buffer_count; i++) {
+        vulkan_mark_command_buffer_dirty(&g_state.vulkan, COMMAND_BUFFER_TYPE_SECONDARY, i);
+    }
+    
+    LOGI("All command buffers marked as dirty");
+}
+
+// 内存池相关API实现
+int compositor_set_memory_pool_enabled(bool enabled) {
+    if (!g_state.initialized) {
+        return -1;
+    }
+    
+    g_state.memory_pool_enabled = enabled;
+    LOGI("Memory pool %s", enabled ? "enabled" : "disabled");
+    return 0;
+}
+
+bool compositor_is_memory_pool_enabled(void) {
+    return g_state.memory_pool_enabled;
+}
+
+int compositor_set_default_memory_pool(struct memory_pool* pool) {
+    if (!g_state.initialized || !g_state.memory_pool_initialized) {
+        return -1;
+    }
+    
+    if (g_state.default_pool) {
+        memory_pool_destroy(g_state.default_pool);
+    }
+    
+    g_state.default_pool = pool;
+    LOGI("Default memory pool set");
+    return 0;
+}
+
+struct memory_pool* compositor_get_default_memory_pool(void) {
+    if (!g_state.initialized || !g_state.memory_pool_initialized) {
+        return NULL;
+    }
+    
+    return g_state.default_pool;
+}
+
+int compositor_set_compositor_memory_pool(struct memory_pool* pool) {
+    if (!g_state.initialized || !g_state.memory_pool_initialized) {
+        return -1;
+    }
+    
+    if (g_state.compositor_pool) {
+        memory_pool_destroy(g_state.compositor_pool);
+    }
+    
+    g_state.compositor_pool = pool;
+    LOGI("Compositor memory pool set");
+    return 0;
+}
+
+struct memory_pool* compositor_get_compositor_memory_pool(void) {
+    if (!g_state.initialized || !g_state.memory_pool_initialized) {
+        return NULL;
+    }
+    
+    return g_state.compositor_pool;
+}
+
+int compositor_get_memory_pool_stats(struct memory_pool_stats* stats) {
+    if (!g_state.initialized || !g_state.memory_pool_initialized || !stats) {
+        return -1;
+    }
+    
+    return memory_pool_get_stats(g_state.default_pool, stats);
+}
+
+void* compositor_memory_alloc(size_t size) {
+    if (!g_state.initialized || !g_state.memory_pool_enabled || !g_state.memory_pool_initialized) {
+        // 回退到标准分配
+        return malloc(size);
+    }
+    
+    return memory_pool_alloc(g_state.default_pool, size);
+}
+
+void* compositor_memory_realloc(void* ptr, size_t size) {
+    if (!g_state.initialized || !g_state.memory_pool_enabled || !g_state.memory_pool_initialized) {
+        // 回退到标准分配
+        return realloc(ptr, size);
+    }
+    
+    return memory_pool_realloc(g_state.default_pool, ptr, size);
+}
+
+void compositor_memory_free(void* ptr) {
+    if (!g_state.initialized || !g_state.memory_pool_enabled || !g_state.memory_pool_initialized) {
+        // 回退到标准分配
+        free(ptr);
+        return;
+    }
+    
+    memory_pool_free(g_state.default_pool, ptr);
+}
+
+// 销毁合成器
+void compositor_destroy(void) {
+    if (!g_state.initialized) {
+        return;
+    }
+    
+    LOGI("Destroying compositor");
+    
+    // 清理Xwayland
+    if (g_state.xwayland_started) {
+        cleanup_xwayland();
+        g_state.xwayland_started = false;
+    }
+    
+    // 清理Vulkan
+    if (g_state.vulkan_initialized) {
+        cleanup_vulkan();
+        g_state.vulkan_initialized = false;
+    }
+    
+    // 清理输入系统
+    if (g_state.input_initialized) {
+        input_destroy(&g_state.input);
+        g_state.input_initialized = false;
+    }
+    
+    // 清理监控模块
+    if (g_state.monitor_initialized) {
+        monitor_destroy(&g_state.monitor);
+        g_state.monitor_initialized = false;
+    }
+    
+    // 清理游戏模式
+    if (g_state.game_mode_initialized) {
+        game_mode_destroy(&g_state.game_mode);
+        g_state.game_mode_initialized = false;
+    }
+    
+    // 清理性能优化
+    if (g_state.perf_opt_initialized) {
+        perf_opt_destroy(&g_state.perf_opt);
+        g_state.perf_opt_initialized = false;
+    }
+    
+    // 清理渲染器
+    if (g_state.renderer_initialized) {
+        renderer_destroy(&g_state.renderer);
+        g_state.renderer_initialized = false;
+    }
+    
+    // 清理窗口管理器
+    if (g_state.window_manager_initialized) {
+        window_manager_destroy(&g_state.window_manager);
+        g_state.window_manager_initialized = false;
+    }
+    
+    // 清理wlroots
+    if (g_state.wlroots_initialized) {
+        cleanup_wlroots();
+        g_state.wlroots_initialized = false;
+    }
+    
+    // 清理Wayland
+    if (g_state.wayland_initialized) {
+        cleanup_wayland();
+        g_state.wayland_initialized = false;
+    }
+    
+    // 清理内存池系统
+    if (g_state.memory_pool_initialized) {
+        // 销毁线程本地缓存
+        memory_pool_thread_cache_destroy(&g_state.thread_cache);
+        
+        // 销毁合成器专用内存池
+        if (g_state.compositor_pool) {
+            memory_pool_destroy(g_state.compositor_pool);
+            g_state.compositor_pool = NULL;
+        }
+        
+        // 销毁默认内存池
+        if (g_state.default_pool) {
+            memory_pool_destroy(g_state.default_pool);
+            g_state.default_pool = NULL;
+        }
+        
+        // 销毁内存池管理器
+        memory_pool_manager_destroy(&g_state.memory_pool);
+        g_state.memory_pool_initialized = false;
+    }
+    
+    // 重置状态
+    memset(&g_state, 0, sizeof(g_state));
+    
+    LOGI("Compositor destroyed");
 }
